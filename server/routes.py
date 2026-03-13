@@ -1,0 +1,290 @@
+"""API routes for the UC AI Descriptions App."""
+
+import logging
+import traceback
+from typing import Optional
+
+from fastapi import APIRouter, HTTPException
+from fastapi.responses import PlainTextResponse
+from pydantic import BaseModel
+
+from . import catalog, ai_gen, audit
+
+logger = logging.getLogger(__name__)
+router = APIRouter(prefix="/api")
+
+
+# ── Browse endpoints ─────────────────────────────────────────────────────
+
+@router.get("/catalogs")
+async def get_catalogs():
+    try:
+        return {"catalogs": catalog.list_catalogs()}
+    except Exception as e:
+        logger.error("List catalogs failed: %s", traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/schemas/{catalog_name}")
+async def get_schemas(catalog_name: str):
+    try:
+        return {"schemas": catalog.list_schemas(catalog_name)}
+    except Exception as e:
+        logger.error("List schemas failed: %s", traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/tables/{catalog_name}/{schema_name}")
+async def get_tables(catalog_name: str, schema_name: str):
+    try:
+        return {"tables": catalog.list_tables(catalog_name, schema_name)}
+    except Exception as e:
+        logger.error("List tables failed: %s", traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/table/{full_name:path}")
+async def get_table_details(full_name: str):
+    try:
+        return {"table": catalog.get_table_details(full_name)}
+    except Exception as e:
+        logger.error("Get table details failed: %s", traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── AI Generation (single table) ────────────────────────────────────────
+
+class GenerateRequest(BaseModel):
+    full_name: str
+    model: Optional[str] = None
+
+
+@router.post("/generate")
+async def generate_descriptions(req: GenerateRequest):
+    """Generate AI descriptions for a table and its columns."""
+    try:
+        table_info = catalog.get_table_details(req.full_name)
+        suggestions = ai_gen.generate_descriptions(table_info, model=req.model)
+        return {
+            "status": "success",
+            "table_full_name": req.full_name,
+            "current_table_comment": table_info["comment"],
+            "suggestions": suggestions,
+            "columns": table_info["columns"],
+        }
+    except Exception as e:
+        logger.error("Generate failed: %s", traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Batch Generation (entire schema) ────────────────────────────────────
+
+class BatchGenerateRequest(BaseModel):
+    catalog_name: str
+    schema_name: str
+    model: Optional[str] = None
+
+
+@router.post("/generate/batch")
+async def batch_generate_descriptions(req: BatchGenerateRequest):
+    """Generate AI descriptions for ALL tables in a schema."""
+    try:
+        tables = catalog.list_tables(req.catalog_name, req.schema_name)
+        results = []
+        errors = []
+
+        for t in tables:
+            # Skip audit tables
+            if t["name"].startswith("_ai_"):
+                continue
+            try:
+                table_info = catalog.get_table_details(t["full_name"])
+                suggestions = ai_gen.generate_descriptions(table_info, model=req.model)
+                results.append({
+                    "full_name": t["full_name"],
+                    "table_name": t["name"],
+                    "current_comment": table_info["comment"],
+                    "suggestions": suggestions,
+                    "columns": table_info["columns"],
+                })
+            except Exception as e:
+                errors.append({"table": t["full_name"], "error": str(e)})
+                logger.error("Batch generate failed for %s: %s", t["full_name"], e)
+
+        return {
+            "status": "success",
+            "catalog": req.catalog_name,
+            "schema": req.schema_name,
+            "tables_processed": len(results),
+            "tables_failed": len(errors),
+            "results": results,
+            "errors": errors,
+        }
+    except Exception as e:
+        logger.error("Batch generate failed: %s", traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Apply descriptions ───────────────────────────────────────────────────
+
+class ApplyTableCommentRequest(BaseModel):
+    full_name: str
+    comment: str
+
+
+class ApplyColumnCommentRequest(BaseModel):
+    full_name: str
+    column_name: str
+    comment: str
+
+
+class ApplyBatchRequest(BaseModel):
+    full_name: str
+    table_comment: Optional[str] = None
+    column_comments: dict[str, str] = {}
+    # Audit info
+    ai_table_suggestion: Optional[str] = None
+    ai_column_suggestions: dict[str, str] = {}
+    current_table_comment: Optional[str] = None
+    current_column_comments: dict[str, str] = {}
+
+
+@router.post("/apply/table")
+async def apply_table_comment(req: ApplyTableCommentRequest):
+    try:
+        success = catalog.apply_table_comment(req.full_name, req.comment)
+        return {"status": "success" if success else "failed", "full_name": req.full_name}
+    except Exception as e:
+        logger.error("Apply table comment failed: %s", traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/apply/column")
+async def apply_column_comment(req: ApplyColumnCommentRequest):
+    try:
+        success = catalog.apply_column_comment(req.full_name, req.column_name, req.comment)
+        return {"status": "success" if success else "failed"}
+    except Exception as e:
+        logger.error("Apply column comment failed: %s", traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/apply/batch")
+async def apply_batch(req: ApplyBatchRequest):
+    """Apply approved table and column descriptions in one call, with audit logging."""
+    results = {"table": None, "columns": {}, "errors": []}
+    audit_actions = []
+
+    try:
+        if req.table_comment:
+            try:
+                success = catalog.apply_table_comment(req.full_name, req.table_comment)
+                results["table"] = "success" if success else "failed"
+                if success:
+                    audit_actions.append({
+                        "item_type": "TABLE",
+                        "item_name": req.full_name.split(".")[-1],
+                        "previous": req.current_table_comment or "",
+                        "ai_suggested": req.ai_table_suggestion or req.table_comment,
+                        "final": req.table_comment,
+                        "action": "approved" if req.table_comment == (req.ai_table_suggestion or "") else "edited",
+                    })
+            except Exception as e:
+                results["table"] = "failed"
+                results["errors"].append(f"Table: {e}")
+
+        for col_name, comment in req.column_comments.items():
+            try:
+                success = catalog.apply_column_comment(req.full_name, col_name, comment)
+                results["columns"][col_name] = "success" if success else "failed"
+                if success:
+                    ai_orig = req.ai_column_suggestions.get(col_name, comment)
+                    audit_actions.append({
+                        "item_type": "COLUMN",
+                        "item_name": col_name,
+                        "previous": req.current_column_comments.get(col_name, ""),
+                        "ai_suggested": ai_orig,
+                        "final": comment,
+                        "action": "approved" if comment == ai_orig else "edited",
+                    })
+            except Exception as e:
+                results["columns"][col_name] = "failed"
+                results["errors"].append(f"Column {col_name}: {e}")
+
+        # Write audit log
+        if audit_actions:
+            try:
+                audit.ensure_audit_table()
+                logged = audit.log_batch(req.full_name, audit_actions)
+                results["audit_logged"] = logged
+            except Exception as e:
+                logger.error("Audit logging failed: %s", e)
+                results["audit_logged"] = 0
+
+        return {"status": "success", "results": results}
+    except Exception as e:
+        logger.error("Batch apply failed: %s", traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Custom Rules (Responsible AI) ────────────────────────────────────────
+
+class CustomRulesRequest(BaseModel):
+    rules: str
+
+
+@router.get("/rules")
+async def get_rules():
+    return {"rules": ai_gen.get_custom_rules()}
+
+
+@router.post("/rules")
+async def set_rules(req: CustomRulesRequest):
+    ai_gen.set_custom_rules(req.rules)
+    return {"status": "success", "rules": req.rules}
+
+
+# ── Notebook Export ──────────────────────────────────────────────────────
+
+class NotebookExportRequest(BaseModel):
+    catalog_name: str
+    schema_name: str
+
+
+@router.post("/export-notebook")
+async def export_notebook(req: NotebookExportRequest):
+    """Generate a downloadable Databricks notebook for automated description generation."""
+    try:
+        code = ai_gen.generate_notebook_code(
+            req.catalog_name,
+            req.schema_name,
+            custom_rules=ai_gen.get_custom_rules(),
+        )
+        return PlainTextResponse(
+            content=code,
+            media_type="text/plain",
+            headers={
+                "Content-Disposition": f"attachment; filename=ai_descriptions_{req.catalog_name}_{req.schema_name}.py"
+            },
+        )
+    except Exception as e:
+        logger.error("Notebook export failed: %s", traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Audit Log ────────────────────────────────────────────────────────────
+
+@router.get("/audit")
+async def get_audit_log(table: Optional[str] = None, limit: int = 50):
+    try:
+        audit.ensure_audit_table()
+        entries = audit.get_audit_log(full_table_name=table, limit=limit)
+        return {"entries": entries, "count": len(entries)}
+    except Exception as e:
+        logger.error("Audit log query failed: %s", traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/health")
+async def health():
+    return {"status": "ok", "service": "uc-ai-descriptions"}

@@ -1,0 +1,962 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Unity Catalog AI Descriptions</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #242836;
+    --border: #2e3345;
+    --text: #e4e6f0;
+    --text-dim: #8b90a5;
+    --accent: #6c8cff;
+    --accent-hover: #8ba3ff;
+    --green: #4ade80;
+    --green-bg: rgba(74, 222, 128, 0.1);
+    --yellow: #fbbf24;
+    --yellow-bg: rgba(251, 191, 36, 0.1);
+    --red: #f87171;
+    --red-bg: rgba(248, 113, 113, 0.1);
+    --orange: #fb923c;
+    --radius: 8px;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+  }
+
+  .header {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 12px 24px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .header h1 { font-size: 18px; font-weight: 600; }
+  .header .subtitle { color: var(--text-dim); font-size: 13px; }
+  .badge { background: var(--accent); color: white; padding: 2px 10px; border-radius: 12px; font-size: 11px; font-weight: 600; }
+
+  /* ── Tab Bar ──────────────────────────────── */
+  .tab-bar {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 0 24px;
+    display: flex;
+    gap: 0;
+  }
+
+  .tab-btn {
+    padding: 10px 20px;
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    font-size: 14px;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    transition: all 0.15s;
+  }
+
+  .tab-btn:hover { color: var(--text); }
+  .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+  .layout {
+    display: grid;
+    grid-template-columns: 300px 1fr;
+    height: calc(100vh - 95px);
+  }
+
+  /* ── Sidebar ──────────────────────────────── */
+  .sidebar {
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    overflow-y: auto;
+    padding: 12px;
+  }
+
+  .sidebar h2 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-dim); margin-bottom: 8px; }
+
+  .tree-item {
+    padding: 6px 10px;
+    border-radius: var(--radius);
+    cursor: pointer;
+    font-size: 13px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    transition: background 0.15s;
+  }
+
+  .tree-item:hover { background: var(--surface2); }
+  .tree-item.active { background: var(--accent); color: white; }
+  .tree-item .icon { font-size: 14px; flex-shrink: 0; }
+  .tree-children { margin-left: 16px; }
+  .tree-item .comment-indicator { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; margin-left: auto; }
+  .tree-item .comment-indicator.has-comment { background: var(--green); }
+  .tree-item .comment-indicator.no-comment { background: var(--yellow); }
+  .loading-inline { color: var(--text-dim); font-size: 12px; padding: 6px 10px; font-style: italic; }
+
+  /* ── Sidebar batch button ─────────────────── */
+  .batch-btn-sidebar {
+    width: 100%;
+    padding: 8px;
+    margin-top: 8px;
+    background: var(--orange);
+    color: #000;
+    border: none;
+    border-radius: var(--radius);
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+  }
+
+  .batch-btn-sidebar:hover { opacity: 0.9; }
+  .batch-btn-sidebar:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  /* ── Main Content ─────────────────────────── */
+  .main { overflow-y: auto; padding: 24px; }
+
+  .empty-state {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    height: 100%; color: var(--text-dim); text-align: center; gap: 12px;
+  }
+
+  .empty-state .icon { font-size: 48px; opacity: 0.4; }
+
+  /* ── Table Detail ─────────────────────────── */
+  .table-header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 20px; }
+  .table-header h2 { font-size: 22px; font-weight: 600; }
+  .table-meta { display: flex; gap: 12px; margin-top: 6px; font-size: 12px; color: var(--text-dim); }
+
+  .btn {
+    padding: 8px 16px; border-radius: var(--radius); border: none; font-size: 13px;
+    font-weight: 500; cursor: pointer; transition: all 0.15s;
+    display: inline-flex; align-items: center; gap: 6px;
+  }
+
+  .btn-primary { background: var(--accent); color: white; }
+  .btn-primary:hover { background: var(--accent-hover); }
+  .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+  .btn-success { background: var(--green); color: #000; }
+  .btn-success:hover { opacity: 0.9; }
+  .btn-success:disabled { opacity: 0.5; cursor: not-allowed; }
+  .btn-outline { background: transparent; color: var(--text); border: 1px solid var(--border); }
+  .btn-outline:hover { border-color: var(--accent); color: var(--accent); }
+  .btn-orange { background: var(--orange); color: #000; }
+  .btn-orange:hover { opacity: 0.9; }
+  .btn-sm { padding: 5px 10px; font-size: 12px; }
+
+  .section {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 16px; margin-bottom: 16px;
+  }
+
+  .section-title { font-size: 14px; font-weight: 600; margin-bottom: 10px; display: flex; align-items: center; gap: 6px; }
+  .desc-current { color: var(--text-dim); font-style: italic; font-size: 13px; }
+
+  .suggestion-row {
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 12px; margin-bottom: 10px; transition: border-color 0.2s;
+  }
+
+  .suggestion-row.approved { border-color: var(--green); background: var(--green-bg); }
+  .suggestion-row.rejected { border-color: var(--red); background: var(--red-bg); opacity: 0.6; }
+  .suggestion-row.edited { border-color: var(--yellow); background: var(--yellow-bg); }
+
+  .suggestion-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-dim); margin-bottom: 2px; }
+  .suggestion-name { font-weight: 600; font-size: 14px; margin-bottom: 2px; }
+  .suggestion-type { font-size: 11px; color: var(--text-dim); font-family: monospace; margin-bottom: 6px; }
+  .suggestion-current { font-size: 12px; color: var(--text-dim); margin-bottom: 6px; padding: 6px; background: var(--bg); border-radius: 4px; }
+  .suggestion-current em { font-style: normal; color: var(--yellow); }
+
+  .suggestion-ai textarea {
+    width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
+    color: var(--text); padding: 8px; font-size: 13px; font-family: inherit;
+    resize: vertical; min-height: 50px; line-height: 1.4;
+  }
+
+  .suggestion-ai textarea:focus { outline: none; border-color: var(--accent); }
+
+  .suggestion-actions { display: flex; gap: 6px; align-items: center; margin-top: 8px; }
+  .suggestion-actions .status-label { margin-left: auto; font-size: 12px; font-weight: 600; }
+  .status-approved { color: var(--green); }
+  .status-rejected { color: var(--red); }
+  .status-edited { color: var(--yellow); }
+
+  .spinner { display: inline-block; width: 18px; height: 18px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .generating-banner {
+    background: var(--surface); border: 1px solid var(--accent); border-radius: var(--radius);
+    padding: 16px; margin-bottom: 16px; display: flex; align-items: center; gap: 12px; font-size: 14px;
+  }
+
+  .apply-bar {
+    position: sticky; bottom: 0; background: var(--surface); border-top: 1px solid var(--border);
+    padding: 12px 16px; display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    margin: 16px -24px -24px -24px;
+  }
+
+  .apply-stats { font-size: 13px; color: var(--text-dim); display: flex; gap: 12px; }
+  .apply-stats .approved-count { color: var(--green); font-weight: 600; }
+  .apply-stats .rejected-count { color: var(--red); font-weight: 600; }
+
+  .toast {
+    position: fixed; bottom: 24px; right: 24px; background: var(--surface);
+    border: 1px solid var(--green); border-radius: var(--radius); padding: 10px 16px;
+    font-size: 13px; z-index: 1000; animation: fadeInUp 0.3s ease;
+    display: flex; align-items: center; gap: 6px;
+  }
+
+  .toast.error { border-color: var(--red); }
+  @keyframes fadeInUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+
+  /* ── Full-width panels (Rules, Audit, Batch) ── */
+  .full-panel { padding: 24px; height: calc(100vh - 95px); overflow-y: auto; }
+
+  .rules-textarea {
+    width: 100%; min-height: 200px; background: var(--bg); border: 1px solid var(--border);
+    border-radius: var(--radius); color: var(--text); padding: 12px; font-size: 14px;
+    font-family: inherit; resize: vertical; line-height: 1.5;
+  }
+
+  .rules-textarea:focus { outline: none; border-color: var(--accent); }
+
+  .audit-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .audit-table th, .audit-table td { padding: 8px 12px; text-align: left; border-bottom: 1px solid var(--border); }
+  .audit-table th { color: var(--text-dim); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+
+  /* ── Batch results ────────────────────────── */
+  .batch-table-card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+    margin-bottom: 16px; overflow: hidden;
+  }
+
+  .batch-table-header {
+    padding: 12px 16px; cursor: pointer; display: flex; justify-content: space-between;
+    align-items: center; font-weight: 600; font-size: 14px;
+  }
+
+  .batch-table-header:hover { background: var(--surface2); }
+  .batch-table-body { padding: 0 16px 16px; }
+
+  .progress-bar { height: 4px; background: var(--border); border-radius: 2px; margin: 16px 0; }
+  .progress-bar-fill { height: 100%; background: var(--accent); border-radius: 2px; transition: width 0.3s; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>Unity Catalog AI Descriptions</h1>
+  <span class="subtitle">Generate, review, and apply AI-powered descriptions with human-in-the-loop guardrails</span>
+</div>
+
+<div class="tab-bar">
+  <button class="tab-btn active" onclick="switchTab('browse')">Browse & Generate</button>
+  <button class="tab-btn" onclick="switchTab('batch')">Batch Schema</button>
+  <button class="tab-btn" onclick="switchTab('rules')">Responsible AI Rules</button>
+  <button class="tab-btn" onclick="switchTab('audit')">Audit Log</button>
+  <button class="tab-btn" onclick="switchTab('notebook')">Export Notebook</button>
+</div>
+
+<!-- ═══ TAB: Browse & Generate ═══════════════════════════════════════ -->
+<div id="tab-browse" class="tab-content">
+  <div class="layout">
+    <div class="sidebar">
+      <h2>Catalog Browser</h2>
+      <div id="catalog-tree"><div class="loading-inline">Loading catalogs...</div></div>
+    </div>
+    <div class="main" id="main-content">
+      <div class="empty-state">
+        <div class="icon">&#128218;</div>
+        <h2>Select a Table</h2>
+        <p>Browse the catalog tree on the left and select a table to generate AI descriptions.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ TAB: Batch Schema ════════════════════════════════════════════ -->
+<div id="tab-batch" class="tab-content" style="display:none;">
+  <div class="full-panel">
+    <div class="section">
+      <div class="section-title">&#9889; Batch Generate Descriptions for Entire Schema</div>
+      <p style="color:var(--text-dim); font-size:13px; margin-bottom:16px;">
+        Generate AI descriptions for ALL tables and columns in a schema at once.
+        Review and approve in bulk before applying to the metastore.
+      </p>
+      <div style="display:flex; gap:12px; align-items:flex-end; flex-wrap:wrap;">
+        <div>
+          <label style="font-size:12px; color:var(--text-dim);">Catalog</label><br>
+          <select id="batch-catalog" onchange="loadBatchSchemas()" style="padding:8px 12px; background:var(--bg); border:1px solid var(--border); border-radius:var(--radius); color:var(--text); font-size:14px; min-width:200px;">
+            <option value="">Select catalog...</option>
+          </select>
+        </div>
+        <div>
+          <label style="font-size:12px; color:var(--text-dim);">Schema</label><br>
+          <select id="batch-schema" style="padding:8px 12px; background:var(--bg); border:1px solid var(--border); border-radius:var(--radius); color:var(--text); font-size:14px; min-width:200px;">
+            <option value="">Select schema...</option>
+          </select>
+        </div>
+        <button class="btn btn-orange" onclick="runBatchGenerate()" id="batch-run-btn">
+          &#9889; Generate for All Tables
+        </button>
+      </div>
+    </div>
+
+    <div id="batch-progress" style="display:none;">
+      <div class="generating-banner"><div class="spinner"></div> <span id="batch-status-text">Generating descriptions...</span></div>
+      <div class="progress-bar"><div class="progress-bar-fill" id="batch-progress-bar" style="width:0%"></div></div>
+    </div>
+
+    <div id="batch-results"></div>
+  </div>
+</div>
+
+<!-- ═══ TAB: Responsible AI Rules ════════════════════════════════════ -->
+<div id="tab-rules" class="tab-content" style="display:none;">
+  <div class="full-panel">
+    <div class="section">
+      <div class="section-title">&#128737; Responsible AI Rules & Custom Prompt Configuration</div>
+      <p style="color:var(--text-dim); font-size:13px; margin-bottom:16px;">
+        Define additional rules that the AI must follow when generating descriptions.
+        These rules are appended to the system prompt and apply to all generations (single table and batch).
+        Use this to enforce organizational standards, terminology, compliance requirements, or Responsible AI policies.
+      </p>
+      <textarea class="rules-textarea" id="custom-rules" placeholder="Example rules:
+- Never include PII field names or examples in descriptions
+- Use company-specific terminology (e.g., 'loyalty member' not 'customer', 'division' not 'region')
+- All descriptions must be suitable for external data sharing catalogs
+- Do not reference internal system names or abbreviations
+- Include data sensitivity classification hints where relevant (e.g., 'Contains PII')
+- Descriptions should be understandable by business analysts, not just engineers"></textarea>
+      <div style="margin-top:12px; display:flex; gap:12px; align-items:center;">
+        <button class="btn btn-primary" onclick="saveRules()">Save Rules</button>
+        <button class="btn btn-outline" onclick="clearRules()">Clear Rules</button>
+        <span id="rules-status" style="color:var(--green); font-size:13px;"></span>
+      </div>
+    </div>
+    <div class="section">
+      <div class="section-title">&#128161; How Rules Are Applied</div>
+      <ul style="color:var(--text-dim); font-size:13px; padding-left:20px;">
+        <li>Rules are injected into the AI system prompt before every generation request</li>
+        <li>They apply to both single-table and batch schema generation</li>
+        <li>Rules persist for the duration of this app session</li>
+        <li>For permanent rules in automated notebooks, export a notebook — rules are embedded in the code</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ TAB: Audit Log ═══════════════════════════════════════════════ -->
+<div id="tab-audit" class="tab-content" style="display:none;">
+  <div class="full-panel">
+    <div class="section">
+      <div class="section-title">&#128203; Description Change Audit Log</div>
+      <p style="color:var(--text-dim); font-size:13px; margin-bottom:12px;">
+        Every approved or edited description is logged to a Delta table with full provenance:
+        who approved it, when, what the AI suggested vs what was actually applied.
+      </p>
+      <div style="display:flex; gap:12px; align-items:center; margin-bottom:16px;">
+        <button class="btn btn-primary" onclick="loadAuditLog()">Refresh Audit Log</button>
+        <span id="audit-count" style="color:var(--text-dim); font-size:13px;"></span>
+      </div>
+      <div id="audit-table-container">
+        <div class="loading-inline">Click "Refresh Audit Log" to load entries...</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ TAB: Export Notebook ═════════════════════════════════════════ -->
+<div id="tab-notebook" class="tab-content" style="display:none;">
+  <div class="full-panel">
+    <div class="section">
+      <div class="section-title">&#128221; Export as Databricks Notebook</div>
+      <p style="color:var(--text-dim); font-size:13px; margin-bottom:16px;">
+        Download a self-contained Databricks notebook that you can schedule as a job.
+        The notebook uses <code>ai_query()</code> to generate descriptions, writes them to a review Delta table,
+        and applies approved descriptions — all without needing this app.
+        Your current Responsible AI rules will be embedded in the notebook.
+      </p>
+      <div style="display:flex; gap:12px; align-items:flex-end; flex-wrap:wrap;">
+        <div>
+          <label style="font-size:12px; color:var(--text-dim);">Catalog</label><br>
+          <select id="nb-catalog" onchange="loadNbSchemas()" style="padding:8px 12px; background:var(--bg); border:1px solid var(--border); border-radius:var(--radius); color:var(--text); font-size:14px; min-width:200px;">
+            <option value="">Select catalog...</option>
+          </select>
+        </div>
+        <div>
+          <label style="font-size:12px; color:var(--text-dim);">Schema</label><br>
+          <select id="nb-schema" style="padding:8px 12px; background:var(--bg); border:1px solid var(--border); border-radius:var(--radius); color:var(--text); font-size:14px; min-width:200px;">
+            <option value="">Select schema...</option>
+          </select>
+        </div>
+        <button class="btn btn-primary" onclick="downloadNotebook()">&#11015; Download Notebook</button>
+      </div>
+    </div>
+    <div class="section">
+      <div class="section-title">&#128640; What the Notebook Does</div>
+      <ol style="color:var(--text-dim); font-size:13px; padding-left:20px; line-height:2;">
+        <li>Creates a <code>_ai_description_reviews</code> Delta table in the target schema</li>
+        <li>Iterates all tables in the schema, calls <code>ai_query()</code> to generate descriptions</li>
+        <li>Inserts AI suggestions into the review table with status <code>pending</code></li>
+        <li>Displays pending suggestions for human review (edit <code>final_description</code>, set <code>status='approved'</code>)</li>
+        <li>Applies all approved descriptions via <code>COMMENT ON TABLE</code> / <code>ALTER COLUMN COMMENT</code></li>
+        <li>Tracks full audit trail: who approved, when, AI vs final description</li>
+      </ol>
+    </div>
+    <div class="section">
+      <div class="section-title">&#128338; Scheduling as a Job</div>
+      <p style="color:var(--text-dim); font-size:13px;">
+        Upload the notebook to your workspace, then create a Databricks Workflow with two tasks:<br>
+        <strong>Task 1:</strong> Run the "Generate" cells on a schedule (e.g., weekly) to refresh suggestions<br>
+        <strong>Task 2:</strong> Human reviewers approve in the Delta table using SQL or a notebook UI<br>
+        <strong>Task 3:</strong> Run the "Apply" cells to commit approved descriptions to Unity Catalog
+      </p>
+    </div>
+  </div>
+</div>
+
+<script>
+const API = '/api';
+
+// ── State ──────────────────────────────────────────────────
+let currentTable = null;
+let suggestions = {};
+let batchResults = [];
+
+// ── Tab Switching ──────────────────────────────────────────
+function switchTab(tab) {
+  document.querySelectorAll('.tab-content').forEach(el => el.style.display = 'none');
+  document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+  document.getElementById(`tab-${tab}`).style.display = '';
+  event.target.classList.add('active');
+
+  if (tab === 'batch' || tab === 'notebook') loadCatalogDropdowns();
+  if (tab === 'rules') loadRules();
+}
+
+// ── API helpers ────────────────────────────────────────────
+async function apiFetch(url, opts = {}) {
+  const resp = await fetch(url, { headers: { 'Content-Type': 'application/json' }, ...opts });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+    throw new Error(err.detail || 'Request failed');
+  }
+  return resp.json();
+}
+
+// ── Catalog Tree (Browse tab) ──────────────────────────────
+async function loadCatalogs() {
+  const tree = document.getElementById('catalog-tree');
+  try {
+    const data = await apiFetch(`${API}/catalogs`);
+    tree.innerHTML = '';
+    data.catalogs.forEach(cat => {
+      const el = document.createElement('div');
+      el.innerHTML = `
+        <div class="tree-item" onclick="toggleCatalog(this, '${cat.name}')">
+          <span class="icon">&#128193;</span><span>${cat.name}</span>
+        </div>
+        <div class="tree-children" id="cat-${cat.name}" style="display:none;"></div>
+      `;
+      tree.appendChild(el);
+    });
+  } catch (e) {
+    tree.innerHTML = `<div class="loading-inline" style="color:var(--red)">Failed: ${e.message}</div>`;
+  }
+}
+
+async function toggleCatalog(el, catalogName) {
+  const children = document.getElementById(`cat-${catalogName}`);
+  if (children.style.display === 'none') {
+    children.style.display = 'block';
+    children.innerHTML = '<div class="loading-inline">Loading schemas...</div>';
+    try {
+      const data = await apiFetch(`${API}/schemas/${catalogName}`);
+      children.innerHTML = '';
+      data.schemas.forEach(s => {
+        const sel = document.createElement('div');
+        sel.innerHTML = `
+          <div class="tree-item" onclick="toggleSchema(this, '${catalogName}', '${s.name}')">
+            <span class="icon">&#128194;</span><span>${s.name}</span>
+          </div>
+          <div class="tree-children" id="schema-${catalogName}-${s.name}" style="display:none;"></div>
+        `;
+        children.appendChild(sel);
+      });
+    } catch (e) {
+      children.innerHTML = `<div class="loading-inline" style="color:var(--red)">${e.message}</div>`;
+    }
+  } else {
+    children.style.display = 'none';
+  }
+}
+
+async function toggleSchema(el, catalogName, schemaName) {
+  const children = document.getElementById(`schema-${catalogName}-${schemaName}`);
+  if (children.style.display === 'none') {
+    children.style.display = 'block';
+    children.innerHTML = '<div class="loading-inline">Loading tables...</div>';
+    try {
+      const data = await apiFetch(`${API}/tables/${catalogName}/${schemaName}`);
+      children.innerHTML = '';
+      data.tables.forEach(t => {
+        const tel = document.createElement('div');
+        tel.innerHTML = `
+          <div class="tree-item" onclick="selectTable('${t.full_name}', this)">
+            <span class="icon">&#128203;</span><span>${t.name}</span>
+            <span class="comment-indicator ${t.comment ? 'has-comment' : 'no-comment'}"></span>
+          </div>
+        `;
+        children.appendChild(tel);
+      });
+      if (data.tables.length === 0) children.innerHTML = '<div class="loading-inline">No tables</div>';
+    } catch (e) {
+      children.innerHTML = `<div class="loading-inline" style="color:var(--red)">${e.message}</div>`;
+    }
+  } else {
+    children.style.display = 'none';
+  }
+}
+
+async function selectTable(fullName, el) {
+  document.querySelectorAll('.tree-item.active').forEach(e => e.classList.remove('active'));
+  if (el) el.classList.add('active');
+  const main = document.getElementById('main-content');
+  main.innerHTML = '<div class="generating-banner"><div class="spinner"></div> Loading table details...</div>';
+  try {
+    const data = await apiFetch(`${API}/table/${fullName}`);
+    currentTable = data.table;
+    suggestions = {};
+    renderTableView();
+  } catch (e) {
+    main.innerHTML = `<div class="section" style="color:var(--red)">Failed: ${e.message}</div>`;
+  }
+}
+
+function renderTableView() {
+  const t = currentTable;
+  const main = document.getElementById('main-content');
+  const hasSuggestions = Object.keys(suggestions).length > 0;
+  let html = `
+    <div class="table-header">
+      <div>
+        <h2>${t.name}</h2>
+        <div class="table-meta">
+          <span>&#128193; ${t.catalog_name}.${t.schema_name}</span>
+          <span>&#128203; ${t.columns.length} columns</span>
+          ${t.data_source_format ? `<span>&#128190; ${t.data_source_format}</span>` : ''}
+        </div>
+      </div>
+      <button class="btn btn-primary" onclick="generateDescriptions()" id="generate-btn">&#9889; Generate AI Descriptions</button>
+    </div>
+    <div class="section">
+      <div class="section-title">&#128196; Table Description</div>
+      ${t.comment ? `<div style="font-size:13px;">${t.comment}</div>` : `<div class="desc-current">(No description set)</div>`}
+    </div>`;
+
+  if (hasSuggestions) {
+    html += renderSuggestions();
+  } else {
+    html += `<div class="section"><div class="section-title">&#128203; Columns</div>
+      <table style="width:100%; font-size:13px; border-collapse:collapse;">
+        <thead><tr style="border-bottom:1px solid var(--border); text-align:left;">
+          <th style="padding:6px;">Name</th><th style="padding:6px;">Type</th><th style="padding:6px;">Description</th>
+        </tr></thead><tbody>
+        ${t.columns.map(c => `<tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:6px; font-weight:500; font-family:monospace; font-size:12px;">${c.name}</td>
+          <td style="padding:6px; color:var(--text-dim); font-family:monospace; font-size:12px;">${c.type_text}</td>
+          <td style="padding:6px; ${c.comment ? '' : 'color:var(--text-dim); font-style:italic;'}">${c.comment || '(none)'}</td>
+        </tr>`).join('')}</tbody></table></div>`;
+  }
+  main.innerHTML = html;
+}
+
+async function generateDescriptions() {
+  const btn = document.getElementById('generate-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<div class="spinner"></div> Generating with Claude...';
+  try {
+    const data = await apiFetch(`${API}/generate`, { method: 'POST', body: JSON.stringify({ full_name: currentTable.full_name }) });
+    suggestions = {};
+    const s = data.suggestions;
+    suggestions['__table__'] = { original: s.table_description, current: s.table_description, status: 'pending', currentComment: currentTable.comment || '' };
+    for (const col of currentTable.columns) {
+      const aiDesc = s.column_descriptions[col.name] || '';
+      if (aiDesc) suggestions[col.name] = { original: aiDesc, current: aiDesc, status: 'pending', type: col.type_text, currentComment: col.comment || '' };
+    }
+    renderTableView();
+    showToast(`Generated descriptions for ${Object.keys(suggestions).length} items`);
+  } catch (e) {
+    showToast(`Generation failed: ${e.message}`, true);
+    btn.disabled = false;
+    btn.innerHTML = '&#9889; Generate AI Descriptions';
+  }
+}
+
+function renderSuggestions() {
+  let html = '';
+  const ts = suggestions['__table__'];
+  if (ts) {
+    html += `<div class="section"><div class="section-title">&#9889; AI-Suggested Table Description</div>
+      <div class="suggestion-row ${ts.status}" id="suggestion-__table__">
+        <div class="suggestion-label">Table</div>
+        <div class="suggestion-name">${currentTable.full_name}</div>
+        ${ts.currentComment ? `<div class="suggestion-current">Current: ${ts.currentComment}</div>` : `<div class="suggestion-current"><em>No current description</em></div>`}
+        <div class="suggestion-ai"><textarea id="text-__table__" onchange="markEdited('__table__')">${ts.current}</textarea></div>
+        <div class="suggestion-actions">
+          <button class="btn btn-sm btn-success" onclick="setStatus('__table__', 'approved')">&#10003; Approve</button>
+          <button class="btn btn-sm btn-outline" onclick="setStatus('__table__', 'rejected')">&#10007; Reject</button>
+          <button class="btn btn-sm btn-outline" onclick="resetSuggestion('__table__')">&#8634; Reset</button>
+          <span class="status-label ${ts.status !== 'pending' ? 'status-' + ts.status : ''}" id="status-__table__">${ts.status !== 'pending' ? ts.status.toUpperCase() : ''}</span>
+        </div>
+      </div></div>`;
+  }
+
+  const colKeys = Object.keys(suggestions).filter(k => k !== '__table__');
+  if (colKeys.length > 0) {
+    html += `<div class="section"><div class="section-title" style="justify-content:space-between;">
+      <span>&#9889; AI-Suggested Column Descriptions (${colKeys.length})</span>
+      <span><button class="btn btn-sm btn-success" onclick="approveAll()">&#10003; Approve All</button>
+      <button class="btn btn-sm btn-outline" onclick="rejectAll()">&#10007; Reject All</button></span>
+    </div>`;
+    for (const colName of colKeys) {
+      const s = suggestions[colName];
+      html += `<div class="suggestion-row ${s.status}" id="suggestion-${colName}">
+        <div class="suggestion-label">Column</div>
+        <div class="suggestion-name">${colName}</div><div class="suggestion-type">${s.type}</div>
+        ${s.currentComment ? `<div class="suggestion-current">Current: ${s.currentComment}</div>` : `<div class="suggestion-current"><em>No current description</em></div>`}
+        <div class="suggestion-ai"><textarea id="text-${colName}" onchange="markEdited('${colName}')">${s.current}</textarea></div>
+        <div class="suggestion-actions">
+          <button class="btn btn-sm btn-success" onclick="setStatus('${colName}', 'approved')">&#10003;</button>
+          <button class="btn btn-sm btn-outline" onclick="setStatus('${colName}', 'rejected')">&#10007;</button>
+          <button class="btn btn-sm btn-outline" onclick="resetSuggestion('${colName}')">&#8634;</button>
+          <span class="status-label ${s.status !== 'pending' ? 'status-' + s.status : ''}" id="status-${colName}">${s.status !== 'pending' ? s.status.toUpperCase() : ''}</span>
+        </div></div>`;
+    }
+    html += '</div>';
+  }
+
+  const approved = Object.values(suggestions).filter(s => s.status === 'approved' || s.status === 'edited').length;
+  const rejected = Object.values(suggestions).filter(s => s.status === 'rejected').length;
+  const total = Object.keys(suggestions).length;
+  html += `<div class="apply-bar"><div class="apply-stats">
+    <div class="stat"><span class="approved-count">${approved}</span> approved</div>
+    <div class="stat"><span class="rejected-count">${rejected}</span> rejected</div>
+    <div class="stat">${total - approved - rejected} pending</div></div><div>
+    <button class="btn btn-outline" onclick="generateDescriptions()" style="margin-right:6px;">&#8635; Regenerate</button>
+    <button class="btn btn-success" onclick="applyApproved()" ${approved === 0 ? 'disabled' : ''} id="apply-btn">&#10003; Apply ${approved} Approved to Metastore</button>
+  </div></div>`;
+  return html;
+}
+
+function setStatus(key, status) {
+  const textarea = document.getElementById(`text-${key}`);
+  if (textarea) suggestions[key].current = textarea.value;
+  suggestions[key].status = status;
+  renderTableView();
+}
+
+function markEdited(key) {
+  const textarea = document.getElementById(`text-${key}`);
+  if (textarea) {
+    suggestions[key].current = textarea.value;
+    if (suggestions[key].current !== suggestions[key].original) suggestions[key].status = 'edited';
+  }
+}
+
+function resetSuggestion(key) { suggestions[key].current = suggestions[key].original; suggestions[key].status = 'pending'; renderTableView(); }
+function approveAll() { for (const k of Object.keys(suggestions)) { if (k === '__table__') continue; const ta = document.getElementById(`text-${k}`); if (ta) suggestions[k].current = ta.value; if (suggestions[k].status !== 'rejected') suggestions[k].status = 'approved'; } renderTableView(); }
+function rejectAll() { for (const k of Object.keys(suggestions)) { if (k === '__table__') continue; suggestions[k].status = 'rejected'; } renderTableView(); }
+
+async function applyApproved() {
+  const btn = document.getElementById('apply-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<div class="spinner"></div> Applying to metastore...';
+
+  const tableComment = (suggestions['__table__']?.status === 'approved' || suggestions['__table__']?.status === 'edited') ? suggestions['__table__'].current : null;
+  const columnComments = {};
+  const aiColumnSuggestions = {};
+  const currentColumnComments = {};
+
+  for (const [key, s] of Object.entries(suggestions)) {
+    if (key === '__table__') continue;
+    if (s.status === 'approved' || s.status === 'edited') {
+      columnComments[key] = s.current;
+      aiColumnSuggestions[key] = s.original;
+      currentColumnComments[key] = s.currentComment;
+    }
+  }
+
+  try {
+    const data = await apiFetch(`${API}/apply/batch`, {
+      method: 'POST',
+      body: JSON.stringify({
+        full_name: currentTable.full_name,
+        table_comment: tableComment,
+        column_comments: columnComments,
+        ai_table_suggestion: suggestions['__table__']?.original || null,
+        ai_column_suggestions: aiColumnSuggestions,
+        current_table_comment: suggestions['__table__']?.currentComment || '',
+        current_column_comments: currentColumnComments,
+      }),
+    });
+    const r = data.results;
+    let ok = 0, fail = 0;
+    if (r.table === 'success') ok++; else if (r.table === 'failed') fail++;
+    for (const s of Object.values(r.columns)) { if (s === 'success') ok++; else fail++; }
+    const auditMsg = r.audit_logged ? ` (${r.audit_logged} audit entries logged)` : '';
+    showToast(`Applied ${ok} descriptions${fail > 0 ? `, ${fail} failed` : ''}${auditMsg}`, fail > 0);
+    await selectTable(currentTable.full_name, null);
+  } catch (e) {
+    showToast(`Apply failed: ${e.message}`, true);
+    btn.disabled = false;
+    btn.innerHTML = '&#10003; Apply Approved to Metastore';
+  }
+}
+
+// ── Catalog Dropdowns (Batch & Notebook tabs) ──────────────
+async function loadCatalogDropdowns() {
+  const data = await apiFetch(`${API}/catalogs`);
+  for (const id of ['batch-catalog', 'nb-catalog']) {
+    const sel = document.getElementById(id);
+    const current = sel.value;
+    sel.innerHTML = '<option value="">Select catalog...</option>';
+    data.catalogs.forEach(c => { const opt = document.createElement('option'); opt.value = c.name; opt.text = c.name; sel.appendChild(opt); });
+    if (current) sel.value = current;
+  }
+}
+
+async function loadBatchSchemas() {
+  const cat = document.getElementById('batch-catalog').value;
+  const sel = document.getElementById('batch-schema');
+  sel.innerHTML = '<option value="">Loading...</option>';
+  if (!cat) { sel.innerHTML = '<option value="">Select schema...</option>'; return; }
+  const data = await apiFetch(`${API}/schemas/${cat}`);
+  sel.innerHTML = '<option value="">Select schema...</option>';
+  data.schemas.forEach(s => { const opt = document.createElement('option'); opt.value = s.name; opt.text = s.name; sel.appendChild(opt); });
+}
+
+async function loadNbSchemas() {
+  const cat = document.getElementById('nb-catalog').value;
+  const sel = document.getElementById('nb-schema');
+  sel.innerHTML = '<option value="">Loading...</option>';
+  if (!cat) { sel.innerHTML = '<option value="">Select schema...</option>'; return; }
+  const data = await apiFetch(`${API}/schemas/${cat}`);
+  sel.innerHTML = '<option value="">Select schema...</option>';
+  data.schemas.forEach(s => { const opt = document.createElement('option'); opt.value = s.name; opt.text = s.name; sel.appendChild(opt); });
+}
+
+// ── Batch Generate ─────────────────────────────────────────
+async function runBatchGenerate() {
+  const cat = document.getElementById('batch-catalog').value;
+  const schema = document.getElementById('batch-schema').value;
+  if (!cat || !schema) { showToast('Select a catalog and schema first', true); return; }
+
+  const btn = document.getElementById('batch-run-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<div class="spinner"></div> Generating...';
+  document.getElementById('batch-progress').style.display = 'block';
+  document.getElementById('batch-results').innerHTML = '';
+
+  try {
+    const data = await apiFetch(`${API}/generate/batch`, {
+      method: 'POST',
+      body: JSON.stringify({ catalog_name: cat, schema_name: schema }),
+    });
+
+    document.getElementById('batch-progress').style.display = 'none';
+    batchResults = data.results;
+
+    let html = `<div style="margin-bottom:16px; font-size:14px;">
+      <strong>${data.tables_processed}</strong> tables processed
+      ${data.tables_failed > 0 ? `, <span style="color:var(--red)">${data.tables_failed} failed</span>` : ''}
+    </div>`;
+
+    for (const r of data.results) {
+      const colCount = Object.keys(r.suggestions.column_descriptions || {}).length;
+      html += `<div class="batch-table-card">
+        <div class="batch-table-header" onclick="this.nextElementSibling.style.display = this.nextElementSibling.style.display === 'none' ? 'block' : 'none'">
+          <span>&#128203; ${r.table_name} <span style="color:var(--text-dim); font-weight:400;">(${colCount} columns)</span></span>
+          <span style="font-size:12px; color:var(--text-dim);">Click to expand</span>
+        </div>
+        <div class="batch-table-body" style="display:none;">
+          <div style="margin-bottom:8px;"><strong>Table:</strong> ${r.suggestions.table_description || '(none)'}</div>
+          <table style="width:100%; font-size:12px; border-collapse:collapse;">
+            <tr style="border-bottom:1px solid var(--border);"><th style="padding:4px;">Column</th><th style="padding:4px;">AI Description</th><th style="padding:4px;">Action</th></tr>
+            ${Object.entries(r.suggestions.column_descriptions || {}).map(([col, desc]) => `
+              <tr style="border-bottom:1px solid var(--border);">
+                <td style="padding:4px; font-family:monospace;">${col}</td>
+                <td style="padding:4px;">${desc}</td>
+                <td style="padding:4px;">
+                  <button class="btn btn-sm btn-success" onclick="batchApplySingle('${r.full_name}', '${col}', this)" data-desc="${desc.replace(/"/g, '&quot;')}">Apply</button>
+                </td>
+              </tr>
+            `).join('')}
+          </table>
+          <div style="margin-top:12px;">
+            <button class="btn btn-sm btn-success" onclick="batchApplyTable('${r.full_name}', ${data.results.indexOf(r)})">&#10003; Apply All for ${r.table_name}</button>
+          </div>
+        </div>
+      </div>`;
+    }
+
+    document.getElementById('batch-results').innerHTML = html;
+    showToast(`Generated descriptions for ${data.tables_processed} tables`);
+  } catch (e) {
+    document.getElementById('batch-progress').style.display = 'none';
+    showToast(`Batch failed: ${e.message}`, true);
+  }
+
+  btn.disabled = false;
+  btn.innerHTML = '&#9889; Generate for All Tables';
+}
+
+async function batchApplyTable(fullName, idx) {
+  const r = batchResults[idx];
+  try {
+    const colComments = r.suggestions.column_descriptions || {};
+    await apiFetch(`${API}/apply/batch`, {
+      method: 'POST',
+      body: JSON.stringify({
+        full_name: fullName,
+        table_comment: r.suggestions.table_description,
+        column_comments: colComments,
+        ai_table_suggestion: r.suggestions.table_description,
+        ai_column_suggestions: colComments,
+      }),
+    });
+    showToast(`Applied all descriptions for ${r.table_name}`);
+  } catch (e) {
+    showToast(`Failed: ${e.message}`, true);
+  }
+}
+
+async function batchApplySingle(fullName, colName, btn) {
+  const desc = btn.getAttribute('data-desc');
+  try {
+    await apiFetch(`${API}/apply/column`, {
+      method: 'POST',
+      body: JSON.stringify({ full_name: fullName, column_name: colName, comment: desc }),
+    });
+    btn.textContent = 'Applied';
+    btn.disabled = true;
+    btn.style.opacity = '0.5';
+  } catch (e) {
+    showToast(`Failed: ${e.message}`, true);
+  }
+}
+
+// ── Custom Rules ───────────────────────────────────────────
+async function loadRules() {
+  try {
+    const data = await apiFetch(`${API}/rules`);
+    document.getElementById('custom-rules').value = data.rules || '';
+  } catch (e) {}
+}
+
+async function saveRules() {
+  const rules = document.getElementById('custom-rules').value;
+  try {
+    await apiFetch(`${API}/rules`, { method: 'POST', body: JSON.stringify({ rules }) });
+    document.getElementById('rules-status').textContent = 'Rules saved successfully';
+    setTimeout(() => document.getElementById('rules-status').textContent = '', 3000);
+  } catch (e) {
+    showToast(`Failed to save rules: ${e.message}`, true);
+  }
+}
+
+function clearRules() {
+  document.getElementById('custom-rules').value = '';
+  saveRules();
+}
+
+// ── Audit Log ──────────────────────────────────────────────
+async function loadAuditLog() {
+  const container = document.getElementById('audit-table-container');
+  container.innerHTML = '<div class="loading-inline">Loading audit log...</div>';
+  try {
+    const data = await apiFetch(`${API}/audit`);
+    document.getElementById('audit-count').textContent = `${data.count} entries`;
+    if (data.entries.length === 0) {
+      container.innerHTML = '<div class="loading-inline">No audit entries yet. Apply some descriptions to see the log.</div>';
+      return;
+    }
+    let html = `<table class="audit-table"><thead><tr>
+      <th>Table</th><th>Type</th><th>Item</th><th>Action</th><th>AI Suggested</th><th>Final</th><th>Applied At</th>
+    </tr></thead><tbody>`;
+    for (const e of data.entries) {
+      const actionColor = e.action === 'approved' ? 'var(--green)' : e.action === 'edited' ? 'var(--yellow)' : 'var(--text-dim)';
+      html += `<tr>
+        <td style="font-family:monospace; font-size:11px;">${e.full_table_name || ''}</td>
+        <td>${e.item_type || ''}</td>
+        <td style="font-family:monospace;">${e.item_name || ''}</td>
+        <td style="color:${actionColor}; font-weight:600;">${(e.action || '').toUpperCase()}</td>
+        <td style="max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${(e.ai_suggested_description || '').replace(/"/g, '&quot;')}">${e.ai_suggested_description || ''}</td>
+        <td style="max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${(e.final_description || '').replace(/"/g, '&quot;')}">${e.final_description || ''}</td>
+        <td style="font-size:11px;">${e.applied_at || ''}</td>
+      </tr>`;
+    }
+    html += '</tbody></table>';
+    container.innerHTML = html;
+  } catch (e) {
+    container.innerHTML = `<div class="loading-inline" style="color:var(--red)">Failed: ${e.message}</div>`;
+  }
+}
+
+// ── Export Notebook ─────────────────────────────────────────
+async function downloadNotebook() {
+  const cat = document.getElementById('nb-catalog').value;
+  const schema = document.getElementById('nb-schema').value;
+  if (!cat || !schema) { showToast('Select a catalog and schema first', true); return; }
+
+  try {
+    const resp = await fetch(`${API}/export-notebook`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ catalog_name: cat, schema_name: schema }),
+    });
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `ai_descriptions_${cat}_${schema}.py`;
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast(`Notebook downloaded: ai_descriptions_${cat}_${schema}.py`);
+  } catch (e) {
+    showToast(`Download failed: ${e.message}`, true);
+  }
+}
+
+// ── Toast ──────────────────────────────────────────────────
+function showToast(msg, isError = false) {
+  const existing = document.querySelector('.toast');
+  if (existing) existing.remove();
+  const toast = document.createElement('div');
+  toast.className = `toast ${isError ? 'error' : ''}`;
+  toast.innerHTML = `${isError ? '&#9888;' : '&#10003;'} ${msg}`;
+  document.body.appendChild(toast);
+  setTimeout(() => toast.remove(), 4000);
+}
+
+// ── Init ───────────────────────────────────────────────────
+loadCatalogs();
+</script>
+</body>
+</html>
