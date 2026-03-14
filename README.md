@@ -2,7 +2,7 @@
 
 A Databricks App that generates AI-powered descriptions for Unity Catalog tables and columns using Claude on Foundation Model API (FMAPI), with human-in-the-loop review and Responsible AI guardrails.
 
-**Live App:** `https://uc-ai-descriptions-<workspace-id>.azure.databricksapps.com`
+Deployable as a **Databricks Asset Bundle** with git-controlled configuration.
 
 ## Problem Statement
 
@@ -22,8 +22,17 @@ Browser  -->  Databricks App (FastAPI)  -->  Foundation Model API (Claude Sonnet
              (browse / apply)             (single + batch)
                     |
                     v
-             Delta Table (Audit Log)
+             Delta Table (Co-located Audit Log)
 ```
+
+### Configuration Architecture
+
+Two-layer git-controlled configuration:
+
+| Layer | File | Controls |
+|-------|------|----------|
+| Infrastructure | `databricks.yml` | Warehouse ID, serving endpoint, app title (env vars per target) |
+| App Behavior | `config.yaml` | Responsible AI rules, audit table name, catalog/schema exclusions |
 
 ## Features
 
@@ -39,17 +48,18 @@ Generate AI descriptions for ALL tables in a schema at once. Results are expanda
 
 ![Batch Expanded](screenshots/02b-batch-expanded.png)
 
-### 3. Responsible AI Rules
-Define custom rules that are injected into the AI system prompt for every generation request. Use this to enforce organizational standards like:
-- Never include PII field names or examples
-- Use company-specific terminology
-- Include data sensitivity classification hints
-- Ensure descriptions are suitable for external data sharing catalogs
+### 3. Responsible AI Rules (Read-Only, Git-Controlled)
+Responsible AI rules are defined in `config.yaml` and injected into the AI system prompt for every generation request. Rules are version-controlled and read-only in the UI — changes require editing `config.yaml` and redeploying.
+
+Example rules:
+- Never include PII field names or example values in descriptions
+- Use business-friendly language suitable for a data catalog audience
+- Do not reference internal system names or implementation details
 
 ![Responsible AI Rules](screenshots/03-responsible-ai-rules.png)
 
-### 4. Audit Log
-Every approved or edited description is logged to a Delta table (`_ai_description_audit`) with full provenance:
+### 4. Audit Log (Co-located)
+Every approved or edited description is logged to a co-located Delta table (`_ai_description_audit`) in the **same catalog/schema** as the described tables, with full provenance:
 - Who approved it
 - When it was applied
 - What the AI originally suggested
@@ -68,217 +78,188 @@ Download a self-contained Python notebook that can be scheduled as a Databricks 
 
 ![Export Notebook](screenshots/05-export-notebook.png)
 
-## Deployment Steps
+## Deployment (DAB)
 
 ### Prerequisites
 - Databricks workspace with Unity Catalog enabled
-- Databricks CLI v0.229.0+ authenticated (`databricks auth login --host <workspace-url> --profile <profile>`)
+- Databricks CLI v0.229.0+ authenticated
 - A SQL warehouse (serverless recommended)
 - Access to a Foundation Model serving endpoint (e.g., `databricks-claude-sonnet-4-6`)
 
-### Step 1: Clone the Repo and Navigate to the App
+### Step 1: Clone and Configure
+
 ```bash
 git clone https://github.com/sprakash277/uc-ai-descriptions.git
 cd uc-ai-descriptions
 ```
 
-### Step 2: Authenticate with Databricks CLI
-```bash
-# Login to your workspace (opens browser for SSO)
-databricks auth login --host https://<your-workspace>.azuredatabricks.net --profile <your-profile>
+**Edit `config.yaml`** to customize Responsible AI rules and exclusions:
+```yaml
+responsible_ai_rules: |
+  - Never include PII field names or example values in descriptions.
+  - Use business-friendly language suitable for a data catalog audience.
 
-# Verify authentication
+audit:
+  table_name: "_ai_description_audit"
+
+exclusions:
+  catalogs:
+    - "__databricks_internal"
+    - "system"
+  schemas:
+    - "information_schema"
+```
+
+### Step 2: Authenticate
+
+```bash
+databricks auth login --host https://<your-workspace>.azuredatabricks.net --profile <your-profile>
 databricks auth profiles | grep <your-profile>
 ```
 
-### Step 3: Create the Databricks App
+### Step 3: Validate and Deploy the Bundle
+
 ```bash
-databricks apps create uc-ai-descriptions \
-  --description "Unity Catalog AI Descriptions with human-in-the-loop review" \
+# Validate
+databricks bundle validate --profile <your-profile>
+
+# Deploy (uploads files + creates/updates app resource)
+databricks bundle deploy --profile <your-profile>
+
+# Deploy the app runtime
+databricks apps deploy uc-ai-descriptions \
+  --source-code-path /Workspace/Users/<your-email>/.bundle/uc-ai-descriptions/dev/files \
   -p <your-profile>
 ```
 
-This creates the app and provisions a service principal (SP) for it. Note the SP's application ID from the output — you'll need it for permissions.
+### Step 4: Attach Resources
 
-### Step 4: Upload Source Code to Workspace
+Add the SQL warehouse and serving endpoint as app resources:
 ```bash
-# Set variables for convenience
-PROFILE=<your-profile>
-EMAIL=<your-email>
-WS_PATH="/Workspace/Users/${EMAIL}/uc-ai-descriptions"
-
-# Create workspace directories
-databricks workspace mkdirs ${WS_PATH} -p ${PROFILE}
-databricks workspace mkdirs ${WS_PATH}/server -p ${PROFILE}
-databricks workspace mkdirs ${WS_PATH}/static -p ${PROFILE}
-
-# Upload app entry point and config files
-databricks workspace import ${WS_PATH}/app.py \
-  --file app.py --language PYTHON --overwrite -p ${PROFILE}
-
-databricks workspace import ${WS_PATH}/app.yaml \
-  --file app.yaml --format AUTO --overwrite -p ${PROFILE}
-
-databricks workspace import ${WS_PATH}/requirements.txt \
-  --file requirements.txt --format AUTO --overwrite -p ${PROFILE}
-
-# Upload all server module files
-for f in server/*.py; do
-  databricks workspace import "${WS_PATH}/${f}" \
-    --file "${f}" --language PYTHON --overwrite -p ${PROFILE}
-done
-
-# Upload the frontend
-databricks workspace import ${WS_PATH}/static/index.html \
-  --file static/index.html --format AUTO --overwrite -p ${PROFILE}
+databricks api patch /api/2.0/apps/uc-ai-descriptions --profile <your-profile> --json '{
+  "resources": [
+    {"name": "sql-warehouse", "sql_warehouse": {"id": "<warehouse-id>", "permission": "CAN_USE"}},
+    {"name": "serving-endpoint", "serving_endpoint": {"name": "databricks-claude-sonnet-4-6", "permission": "CAN_QUERY"}}
+  ]
+}'
 ```
 
-**Verify the upload:**
+### Step 5: Grant Service Principal Permissions
+
+Find the SP application ID:
 ```bash
-databricks workspace list ${WS_PATH} -p ${PROFILE}
-databricks workspace list ${WS_PATH}/server -p ${PROFILE}
+databricks apps get uc-ai-descriptions -p <your-profile> | grep service_principal_client_id
 ```
 
-You should see: `app.py`, `app.yaml`, `requirements.txt`, `server/` (with `__init__.py`, `config.py`, `catalog.py`, `ai_gen.py`, `audit.py`, `routes.py`), and `static/` (with `index.html`).
-
-### Step 5: Deploy the App
-```bash
-databricks apps deploy uc-ai-descriptions \
-  --source-code-path ${WS_PATH} \
-  -p ${PROFILE}
-```
-
-Wait for the deploy to complete. You should see `"state": "SUCCEEDED"` in the output.
-
-### Step 6: Grant Service Principal Permissions
-
-The app runs as a service principal. Find its application ID:
-```bash
-databricks apps get uc-ai-descriptions -p ${PROFILE} | grep -A5 service_principal
-```
-
-**a) Unity Catalog permissions** (run in a SQL notebook or via Databricks SQL):
+Grant Unity Catalog permissions (run in SQL or notebook):
 ```sql
--- Replace <sp-application-id> with the SP's UUID and <catalog>.<schema> with your target
-GRANT USE CATALOG ON CATALOG <catalog_name> TO `<sp-application-id>`;
-GRANT USE SCHEMA ON SCHEMA <catalog_name>.<schema_name> TO `<sp-application-id>`;
-GRANT SELECT ON SCHEMA <catalog_name>.<schema_name> TO `<sp-application-id>`;
-
--- Grant ability to set comments (COMMENT ON TABLE / ALTER COLUMN COMMENT)
-GRANT MODIFY ON SCHEMA <catalog_name>.<schema_name> TO `<sp-application-id>`;
-
--- Grant audit table creation and write access
-GRANT CREATE TABLE ON SCHEMA <catalog_name>.<schema_name> TO `<sp-application-id>`;
+-- Replace <sp-id> with the SP's UUID
+GRANT USE CATALOG ON CATALOG <catalog> TO `<sp-id>`;
+GRANT USE SCHEMA ON SCHEMA <catalog>.<schema> TO `<sp-id>`;
+GRANT SELECT, MODIFY ON SCHEMA <catalog>.<schema> TO `<sp-id>`;
+GRANT CREATE TABLE ON SCHEMA <catalog>.<schema> TO `<sp-id>`;
 ```
 
-**b) SQL Warehouse access:**
-```bash
-# Get your warehouse ID
-databricks warehouses list -p ${PROFILE}
+### Step 6: Redeploy and Verify
 
-# Grant CAN_USE permission to the SP
-curl -X PATCH "https://<workspace>/api/2.0/permissions/sql/warehouses/<warehouse-id>" \
-  -H "Authorization: Bearer $(databricks auth token -p ${PROFILE} | jq -r .access_token)" \
-  -H "Content-Type: application/json" \
-  -d '{"access_control_list": [{"service_principal_name": "<sp-application-id>", "permission_level": "CAN_USE"}]}'
-```
-
-**c) Foundation Model serving endpoint** — add as an app resource so the SP gets auto-granted access:
 ```bash
-curl -X PATCH "https://<workspace>/api/2.0/apps/uc-ai-descriptions" \
-  -H "Authorization: Bearer $(databricks auth token -p ${PROFILE} | jq -r .access_token)" \
-  -H "Content-Type: application/json" \
-  -d '{"resources": [{"name": "serving-endpoint", "serving_endpoint": {"name": "databricks-claude-sonnet-4-6", "permission": "CAN_QUERY"}}]}'
-```
-
-After adding resources, redeploy to pick up the changes:
-```bash
+# Redeploy to pick up resource permissions
 databricks apps deploy uc-ai-descriptions \
-  --source-code-path ${WS_PATH} \
-  -p ${PROFILE}
+  --source-code-path /Workspace/Users/<your-email>/.bundle/uc-ai-descriptions/dev/files \
+  -p <your-profile>
+
+# Check status
+databricks apps get uc-ai-descriptions -p <your-profile>
 ```
 
-### Step 7: Create the Audit Table (Optional)
-
-The app will try to auto-create the audit table, but if the SP lacks CREATE TABLE permission, create it manually:
-```sql
-CREATE TABLE IF NOT EXISTS <catalog>.<schema>._ai_description_audit (
-    full_table_name STRING,
-    item_type STRING COMMENT 'TABLE or COLUMN',
-    item_name STRING,
-    previous_description STRING,
-    ai_suggested_description STRING,
-    final_description STRING COMMENT 'What was actually applied (may be edited)',
-    action STRING COMMENT 'approved, rejected, edited',
-    applied_by STRING,
-    applied_at TIMESTAMP
-) USING DELTA
-COMMENT 'Audit log for AI-generated description changes';
-
--- Grant the SP access
-GRANT ALL PRIVILEGES ON TABLE <catalog>.<schema>._ai_description_audit TO `<sp-application-id>`;
-```
-
-> **Note:** Update the `AUDIT_TABLE` variable in `server/audit.py` to match your catalog and schema.
-
-### Step 8: Verify Deployment
-```bash
-# Get app URL
-databricks apps get uc-ai-descriptions -p ${PROFILE}
-```
-
-Navigate to the app URL in your browser. You should see the 5-tab interface. Test the workflow:
+Navigate to the app URL and test the workflow:
 1. **Browse & Generate** — Select a catalog > schema > table, click "Generate AI Descriptions"
 2. **Approve/Edit** — Review suggestions, approve or edit, click "Apply to Metastore"
-3. **Audit Log** — Click "Refresh Audit Log" to see the entries
-4. **Batch Schema** — Select a catalog and schema, click "Generate for All Tables"
-5. **Export Notebook** — Download a notebook for scheduled automation
+3. **Batch Schema** — Select a catalog and schema, click "Generate for All Tables"
+4. **Responsible AI Rules** — Verify rules from `config.yaml` are displayed (read-only)
+5. **Audit Log** — Click "Refresh Audit Log" to see entries
+6. **Export Notebook** — Download a notebook for scheduled automation
 
 ### Updating the App
 
-After making code changes, re-upload and redeploy:
+After code changes:
 ```bash
-# Re-upload changed files (example: updating the frontend)
-databricks workspace import ${WS_PATH}/static/index.html \
-  --file static/index.html --format AUTO --overwrite -p ${PROFILE}
-
-# Redeploy
+databricks bundle deploy --profile <your-profile>
 databricks apps deploy uc-ai-descriptions \
-  --source-code-path ${WS_PATH} \
-  -p ${PROFILE}
+  --source-code-path /Workspace/Users/<your-email>/.bundle/uc-ai-descriptions/dev/files \
+  -p <your-profile>
 ```
 
 ### Viewing App Logs
 
-Access real-time logs by appending `/logz` to your app URL:
 ```
 https://uc-ai-descriptions-<workspace-id>.azure.databricksapps.com/logz
 ```
+
+Or via CLI:
+```bash
+databricks apps logs uc-ai-descriptions --tail-lines 50 -p <your-profile>
+```
+
+## Configuration
+
+### `databricks.yml` — Infrastructure (per-environment)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `warehouse_id` | `""` (auto-detect) | SQL warehouse ID; empty = auto-select running serverless warehouse |
+| `serving_endpoint` | `databricks-claude-sonnet-4-6` | Foundation Model API endpoint name |
+| `app_title` | `Unity Catalog AI Descriptions` | Display title in the app header |
+
+Override per target:
+```yaml
+targets:
+  prod:
+    variables:
+      serving_endpoint: "databricks-claude-sonnet-4-6"
+      warehouse_id: "abc123def456"
+```
+
+### `config.yaml` — App Behavior (git-controlled)
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `responsible_ai_rules` | (see file) | Rules injected into every AI generation prompt |
+| `audit.table_name` | `_ai_description_audit` | Name of the co-located audit table |
+| `exclusions.catalogs` | `["__databricks_internal", "system"]` | Catalogs hidden from the browse tree |
+| `exclusions.schemas` | `["information_schema"]` | Schemas hidden from the browse tree |
 
 ## Project Structure
 
 ```
 uc-ai-descriptions/
-  app.py              # FastAPI entry point, serves static frontend + API
-  app.yaml            # Databricks App configuration
-  requirements.txt    # Python dependencies
+  databricks.yml        # DAB bundle definition (infrastructure config)
+  config.yaml           # App behavior config (rules, exclusions, audit)
+  app.py                # FastAPI entry point, serves static frontend + API
+  app.yaml              # Databricks App runtime command config
+  requirements.txt      # Python dependencies
   server/
-    __init__.py       # Package init
-    config.py         # Dual-mode auth (Databricks App vs local dev)
-    catalog.py        # Unity Catalog operations (browse, apply comments)
-    ai_gen.py         # AI description generation via FMAPI + notebook export
-    audit.py          # Delta table audit logging
-    routes.py         # All API endpoints
+    __init__.py
+    config.py           # Central config loader (config.yaml + env vars) + auth
+    warehouse.py        # Centralized warehouse resolution with caching
+    sql_utils.py        # SQL safety (identifier validation, comment escaping)
+    catalog.py          # Unity Catalog operations (browse, apply comments)
+    ai_gen.py           # AI description generation via FMAPI + notebook export
+    audit.py            # Co-located Delta table audit logging
+    routes.py           # All API endpoints
   static/
-    index.html        # Single-page frontend (HTML/CSS/JS)
-  screenshots/        # App screenshots for documentation
+    index.html          # Single-page frontend (HTML/CSS/JS)
+  screenshots/          # App screenshots for documentation
 ```
 
 ## API Endpoints
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/catalogs` | List all catalogs |
+| GET | `/api/health` | Health check |
+| GET | `/api/settings` | Current effective configuration |
+| GET | `/api/warehouses` | List available SQL warehouses with state |
+| GET | `/api/catalogs` | List all catalogs (respects exclusions) |
 | GET | `/api/schemas/{catalog}` | List schemas in a catalog |
 | GET | `/api/tables/{catalog}/{schema}` | List tables in a schema |
 | GET | `/api/table/{full_name}` | Get table details + columns |
@@ -287,31 +268,31 @@ uc-ai-descriptions/
 | POST | `/api/apply/table` | Apply a table comment |
 | POST | `/api/apply/column` | Apply a column comment |
 | POST | `/api/apply/batch` | Apply multiple comments with audit logging |
-| GET | `/api/rules` | Get current Responsible AI rules |
-| POST | `/api/rules` | Set Responsible AI rules |
+| GET | `/api/rules` | Get Responsible AI rules (read-only, from config.yaml) |
 | POST | `/api/export-notebook` | Download automation notebook |
-| GET | `/api/audit` | Query audit log entries |
-| GET | `/api/health` | Health check |
-
-## Configuration
-
-| Environment Variable | Default | Description |
-|---------------------|---------|-------------|
-| `SERVING_ENDPOINT` | `databricks-claude-sonnet-4-6` | Foundation Model endpoint |
-| `DATABRICKS_HOST` | auto-detected | Workspace URL |
-| `DATABRICKS_PROFILE` | `DEFAULT` | CLI profile (local dev only) |
+| GET | `/api/audit?catalog_name=X&schema_name=Y` | Query co-located audit log entries |
 
 ## Local Development
 
 ```bash
-# Set your Databricks CLI profile
 export DATABRICKS_PROFILE=<your-profile>
-
-# Install dependencies
 pip install -r requirements.txt
-
-# Run locally
 uvicorn app:app --reload --port 8000
-
 # Open http://localhost:8000
+```
+
+## E2E Test Results
+
+All endpoints verified against the live deployment:
+
+```
+1/9: Health Check             ✓  {"status":"ok"}
+2/9: Settings                 ✓  config.yaml loaded, rules present, exclusions active
+3/9: Rules (read-only)        ✓  Returns rules from config.yaml
+4/9: POST /rules rejected     ✓  405 Method Not Allowed (rules are git-controlled)
+5/9: List Catalogs            ✓  3 catalogs returned (system/internal excluded)
+6/9: List Schemas             ✓  8 schemas (information_schema excluded)
+7/9: List Tables              ✓  Tables listed with metadata
+8/9: List Warehouses          ✓  Warehouse ID, name, state, type returned
+9/9: AI Generation            ✓  Claude generated table + column descriptions via FMAPI
 ```

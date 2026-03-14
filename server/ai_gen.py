@@ -6,7 +6,7 @@ import os
 
 from openai import OpenAI
 
-from .config import get_oauth_token, get_workspace_host
+from .config import app_config, get_oauth_token, get_workspace_host
 
 logger = logging.getLogger(__name__)
 
@@ -22,24 +22,12 @@ Rules:
 - Do not include the column name or type in the description — the reader already sees those.
 - Return valid JSON only, no markdown fences."""
 
-# In-memory custom rules (persisted per app session)
-_custom_rules: str = ""
-
-
-def get_custom_rules() -> str:
-    return _custom_rules
-
-
-def set_custom_rules(rules: str) -> None:
-    global _custom_rules
-    _custom_rules = rules
-
 
 def _build_system_prompt() -> str:
-    """Build system prompt including any custom Responsible AI rules."""
+    """Build system prompt including Responsible AI rules from config."""
     prompt = DEFAULT_SYSTEM_PROMPT
-    if _custom_rules:
-        prompt += f"\n\nAdditional organizational rules:\n{_custom_rules}"
+    if app_config.responsible_ai_rules:
+        prompt += f"\n\nAdditional organizational rules:\n{app_config.responsible_ai_rules}"
     return prompt
 
 
@@ -64,7 +52,7 @@ def generate_descriptions(
             }
         }
     """
-    model = model or os.environ.get("SERVING_ENDPOINT", "databricks-claude-sonnet-4-6")
+    model = model or app_config.serving_endpoint
     client = _get_client()
 
     # Build context about the table
@@ -115,15 +103,16 @@ Return JSON in this exact format:
 def generate_notebook_code(
     catalog_name: str,
     schema_name: str,
-    custom_rules: str = "",
 ) -> str:
     """Generate a downloadable Databricks notebook that automates AI description generation."""
     rules_block = ""
-    if custom_rules:
+    if app_config.responsible_ai_rules:
         rules_block = f'''
-CUSTOM_RULES = """{custom_rules}"""
+CUSTOM_RULES = """{app_config.responsible_ai_rules}"""
 system_prompt += f"\\n\\nAdditional organizational rules:\\n{{CUSTOM_RULES}}"
 '''
+
+    model = app_config.serving_endpoint
 
     notebook = f'''# Databricks notebook source
 # MAGIC %md
@@ -149,7 +138,7 @@ system_prompt += f"\\n\\nAdditional organizational rules:\\n{{CUSTOM_RULES}}"
 CATALOG = "{catalog_name}"
 SCHEMA = "{schema_name}"
 REVIEW_TABLE = f"{{CATALOG}}.{{SCHEMA}}._ai_description_reviews"
-MODEL = "databricks-claude-sonnet-4-6"
+MODEL = "{model}"
 
 # COMMAND ----------
 
