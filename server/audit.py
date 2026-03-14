@@ -1,33 +1,37 @@
-"""Audit logging — write description approvals to a Delta table."""
+"""Audit logging — write description approvals to a co-located Delta table."""
 
 import logging
-from datetime import datetime, timezone
 from typing import Optional
 
-from .config import get_workspace_client
+from .config import app_config, get_workspace_client
+from .warehouse import resolve_warehouse_id
+from .sql_utils import escape_comment
 
 logger = logging.getLogger(__name__)
 
-# Default audit table location
-AUDIT_TABLE = "cat_nsp_z5zw62.retail_demo._ai_description_audit"
+
+def _audit_table_path(catalog_name: str, schema_name: str) -> str:
+    """Build the full audit table path co-located with the described tables."""
+    return f"{catalog_name}.{schema_name}.{app_config.audit_table_name}"
 
 
-def _get_warehouse_id() -> str:
-    w = get_workspace_client()
-    warehouses = list(w.warehouses.list())
-    if not warehouses:
-        raise RuntimeError("No SQL warehouse available")
-    return warehouses[0].id
+def parse_full_name(full_name: str) -> tuple[str, str, str]:
+    """Parse catalog.schema.table into components."""
+    parts = full_name.split(".")
+    if len(parts) != 3:
+        raise ValueError(f"Expected catalog.schema.table, got: {full_name!r}")
+    return parts[0], parts[1], parts[2]
 
 
-def ensure_audit_table() -> bool:
+def ensure_audit_table(catalog_name: str, schema_name: str) -> bool:
     """Create the audit table if it doesn't exist."""
     from databricks.sdk.service.sql import StatementState
     w = get_workspace_client()
-    wh_id = _get_warehouse_id()
+    wh_id = resolve_warehouse_id()
+    table_path = _audit_table_path(catalog_name, schema_name)
 
     sql = f"""
-    CREATE TABLE IF NOT EXISTS {AUDIT_TABLE} (
+    CREATE TABLE IF NOT EXISTS {table_path} (
         full_table_name STRING,
         item_type STRING COMMENT 'TABLE or COLUMN',
         item_name STRING,
@@ -48,6 +52,8 @@ def ensure_audit_table() -> bool:
 
 
 def log_action(
+    catalog_name: str,
+    schema_name: str,
     full_table_name: str,
     item_type: str,
     item_name: str,
@@ -60,13 +66,13 @@ def log_action(
     """Log a single description action to the audit table."""
     from databricks.sdk.service.sql import StatementState
     w = get_workspace_client()
-    wh_id = _get_warehouse_id()
+    wh_id = resolve_warehouse_id()
+    table_path = _audit_table_path(catalog_name, schema_name)
 
-    def esc(s: str) -> str:
-        return s.replace("'", "\\'").replace("\n", " ")
+    esc = escape_comment
 
     sql = f"""
-    INSERT INTO {AUDIT_TABLE}
+    INSERT INTO {table_path}
     VALUES (
         '{esc(full_table_name)}',
         '{esc(item_type)}',
@@ -91,6 +97,8 @@ def log_action(
 
 
 def log_batch(
+    catalog_name: str,
+    schema_name: str,
     full_table_name: str,
     actions: list[dict],
     applied_by: str = "app_user",
@@ -99,6 +107,8 @@ def log_batch(
     success_count = 0
     for a in actions:
         ok = log_action(
+            catalog_name=catalog_name,
+            schema_name=schema_name,
             full_table_name=full_table_name,
             item_type=a["item_type"],
             item_name=a["item_name"],
@@ -113,18 +123,24 @@ def log_batch(
     return success_count
 
 
-def get_audit_log(full_table_name: Optional[str] = None, limit: int = 50) -> list[dict]:
+def get_audit_log(
+    catalog_name: str,
+    schema_name: str,
+    full_table_name: Optional[str] = None,
+    limit: int = 50,
+) -> list[dict]:
     """Retrieve recent audit log entries."""
     from databricks.sdk.service.sql import StatementState
     w = get_workspace_client()
-    wh_id = _get_warehouse_id()
+    wh_id = resolve_warehouse_id()
+    table_path = _audit_table_path(catalog_name, schema_name)
 
     where = ""
     if full_table_name:
-        where = f"WHERE full_table_name = '{full_table_name}'"
+        where = f"WHERE full_table_name = '{escape_comment(full_table_name)}'"
 
     sql = f"""
-    SELECT * FROM {AUDIT_TABLE}
+    SELECT * FROM {table_path}
     {where}
     ORDER BY applied_at DESC
     LIMIT {limit}

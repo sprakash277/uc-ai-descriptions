@@ -3,9 +3,9 @@
 import logging
 from typing import Any
 
-from databricks.sdk.service.catalog import ColumnInfo
-
-from .config import get_workspace_client
+from .config import app_config, get_workspace_client
+from .warehouse import resolve_warehouse_id
+from .sql_utils import escape_comment
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +15,7 @@ def list_catalogs() -> list[dict]:
     return [
         {"name": c.name, "comment": c.comment or ""}
         for c in w.catalogs.list()
-        if c.name not in ("__databricks_internal", "system")
+        if c.name not in app_config.excluded_catalogs
     ]
 
 
@@ -24,7 +24,7 @@ def list_schemas(catalog: str) -> list[dict]:
     return [
         {"name": s.name, "comment": s.comment or ""}
         for s in w.schemas.list(catalog_name=catalog)
-        if s.name not in ("information_schema",)
+        if s.name not in app_config.excluded_schemas
     ]
 
 
@@ -72,14 +72,9 @@ def apply_table_comment(full_name: str, comment: str) -> bool:
     """Apply a comment to a table using SQL."""
     from databricks.sdk.service.sql import StatementState
     w = get_workspace_client()
+    warehouse_id = resolve_warehouse_id()
 
-    # Find a SQL warehouse
-    warehouses = list(w.warehouses.list())
-    if not warehouses:
-        raise RuntimeError("No SQL warehouse available")
-    warehouse_id = warehouses[0].id
-
-    escaped = comment.replace("'", "\\'")
+    escaped = escape_comment(comment)
     sql = f"COMMENT ON TABLE {full_name} IS '{escaped}'"
 
     resp = w.statement_execution.execute_statement(
@@ -94,13 +89,9 @@ def apply_column_comment(full_name: str, column_name: str, comment: str) -> bool
     """Apply a comment to a column using SQL."""
     from databricks.sdk.service.sql import StatementState
     w = get_workspace_client()
+    warehouse_id = resolve_warehouse_id()
 
-    warehouses = list(w.warehouses.list())
-    if not warehouses:
-        raise RuntimeError("No SQL warehouse available")
-    warehouse_id = warehouses[0].id
-
-    escaped = comment.replace("'", "\\'")
+    escaped = escape_comment(comment)
     sql = f"ALTER TABLE {full_name} ALTER COLUMN `{column_name}` COMMENT '{escaped}'"
 
     resp = w.statement_execution.execute_statement(

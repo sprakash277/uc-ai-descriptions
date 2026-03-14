@@ -1,0 +1,44 @@
+bundle:
+  name: uc-ai-descriptions
+
+variables:
+  warehouse_id:
+    description: "SQL warehouse ID (leave empty for auto-detect)"
+    default: ""
+  serving_endpoint:
+    description: "Foundation Model API serving endpoint name"
+    default: "databricks-claude-sonnet-4-6"
+  app_title:
+    description: "Display title for the app"
+    default: "Unity Catalog AI Descriptions"
+
+resources:
+  apps:
+    uc-ai-descriptions:
+      name: uc-ai-descriptions
+      description: "AI-powered UC table/column descriptions with human-in-the-loop review"
+      source_code_path: ./
+      config:
+        command:
+          - python
+          - -m
+          - uvicorn
+          - "app:app"
+          - "--host"
+          - "0.0.0.0"
+          - "--port"
+          - "8000"
+        env:
+          - name: SERVING_ENDPOINT
+            value: ${var.serving_endpoint}
+          - name: WAREHOUSE_ID
+            value: ${var.warehouse_id}
+          - name: APP_TITLE
+            value: ${var.app_title}
+
+targets:
+  dev:
+    default: true
+  prod:
+    variables:
+      serving_endpoint: "databricks-claude-sonnet-4-6"

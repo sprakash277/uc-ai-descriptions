@@ -1,0 +1,14 @@
+responsible_ai_rules: |
+  - Never include PII field names or example values in descriptions.
+  - Use business-friendly language suitable for a data catalog audience.
+  - Do not reference internal system names or implementation details.
+
+audit:
+  table_name: "_ai_description_audit"
+
+exclusions:
+  catalogs:
+    - "__databricks_internal"
+    - "system"
+  schemas:
+    - "information_schema"
