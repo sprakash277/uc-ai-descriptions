@@ -34,57 +34,11 @@ Two-layer git-controlled configuration:
 | Infrastructure | `databricks.yml` | Warehouse ID, serving endpoint, app title (env vars per target) |
 | App Behavior | `config.yaml` | Responsible AI rules, audit table name, catalog/schema exclusions |
 
-## Features
+---
 
-### 1. Browse & Generate (Single Table)
-Browse the Unity Catalog tree (catalogs > schemas > tables), view table metadata and columns, then generate AI descriptions with one click. Review each suggestion and approve, edit, or reject before applying to the metastore.
+## End-to-End Code Flow
 
-![Browse & Generate](screenshots/01-browse-generate.png)
-
-### 2. Batch Schema Processing
-Generate AI descriptions for ALL tables in a schema at once. Results are expandable per-table with individual approve/apply controls for both table-level and column-level descriptions.
-
-![Batch Schema Results](screenshots/02-batch-schema-results.png)
-
-![Batch Expanded](screenshots/02b-batch-expanded.png)
-
-### 3. Responsible AI Rules (Read-Only, Git-Controlled)
-Responsible AI rules are defined in `config.yaml` and injected into the AI system prompt for every generation request. Rules are version-controlled and read-only in the UI — changes require editing `config.yaml` and redeploying.
-
-Example rules:
-- Never include PII field names or example values in descriptions
-- Use business-friendly language suitable for a data catalog audience
-- Do not reference internal system names or implementation details
-
-![Responsible AI Rules](screenshots/03-responsible-ai-rules.png)
-
-### 4. Audit Log (Co-located)
-Every approved or edited description is logged to a co-located Delta table (`_ai_description_audit`) in the **same catalog/schema** as the described tables, with full provenance:
-- Who approved it
-- When it was applied
-- What the AI originally suggested
-- What was actually applied (may differ if edited)
-- Whether it was approved as-is or edited
-
-![Audit Log](screenshots/04-audit-log.png)
-
-### 5. Export as Databricks Notebook
-Download a self-contained Python notebook that can be scheduled as a Databricks Workflow job. The notebook:
-1. Creates a `_ai_description_reviews` Delta table
-2. Uses `ai_query()` to generate descriptions for all tables in a schema
-3. Inserts suggestions as "pending" for human review
-4. Applies approved descriptions via `COMMENT ON TABLE` / `ALTER COLUMN COMMENT`
-5. Tracks full audit trail
-
-![Export Notebook](screenshots/05-export-notebook.png)
-
-## Deployment (DAB)
-
-### Prerequisites
-- Databricks workspace with Unity Catalog enabled
-- Databricks CLI v0.229.0+ authenticated
-- A SQL warehouse (serverless recommended)
-- Access to a Foundation Model serving endpoint (e.g., `databricks-claude-sonnet-4-6`)
+This section walks through the complete application flow from deployment to usage, with screenshots of each step.
 
 ### Step 1: Clone and Configure
 
@@ -98,6 +52,7 @@ cd uc-ai-descriptions
 responsible_ai_rules: |
   - Never include PII field names or example values in descriptions.
   - Use business-friendly language suitable for a data catalog audience.
+  - Do not reference internal system names or implementation details.
 
 audit:
   table_name: "_ai_description_audit"
@@ -110,7 +65,7 @@ exclusions:
     - "information_schema"
 ```
 
-### Step 2: Authenticate
+### Step 2: Authenticate with Databricks CLI
 
 ```bash
 databricks auth login --host https://<your-workspace>.azuredatabricks.net --profile <your-profile>
@@ -120,7 +75,7 @@ databricks auth profiles | grep <your-profile>
 ### Step 3: Validate and Deploy the Bundle
 
 ```bash
-# Validate
+# Validate the bundle configuration
 databricks bundle validate --profile <your-profile>
 
 # Deploy (uploads files + creates/updates app resource)
@@ -172,34 +127,96 @@ databricks apps deploy uc-ai-descriptions \
 databricks apps get uc-ai-descriptions -p <your-profile>
 ```
 
-Navigate to the app URL and test the workflow:
-1. **Browse & Generate** — Select a catalog > schema > table, click "Generate AI Descriptions"
-2. **Approve/Edit** — Review suggestions, approve or edit, click "Apply to Metastore"
-3. **Batch Schema** — Select a catalog and schema, click "Generate for All Tables"
-4. **Responsible AI Rules** — Verify rules from `config.yaml` are displayed (read-only)
-5. **Audit Log** — Click "Refresh Audit Log" to see entries
-6. **Export Notebook** — Download a notebook for scheduled automation
+---
 
-### Updating the App
+## App UI Walkthrough
 
-After code changes:
-```bash
-databricks bundle deploy --profile <your-profile>
-databricks apps deploy uc-ai-descriptions \
-  --source-code-path /Workspace/Users/<your-email>/.bundle/uc-ai-descriptions/dev/files \
-  -p <your-profile>
-```
+Once deployed, navigate to the app URL. The app has five tabs that cover the full workflow.
 
-### Viewing App Logs
+### Tab 1: Browse & Generate (Single Table)
 
-```
-https://uc-ai-descriptions-<workspace-id>.azure.databricksapps.com/logz
-```
+The landing page shows the **Catalog Browser** on the left. All catalogs in your Unity Catalog metastore are listed (excluding system catalogs defined in `config.yaml`).
 
-Or via CLI:
-```bash
-databricks apps logs uc-ai-descriptions --tail-lines 50 -p <your-profile>
-```
+![Browse & Generate - Landing](screenshots/01-browse-generate.png)
+
+Click a catalog to expand it and see schemas. Click a schema to see tables.
+
+![Browse & Generate - Expanded Tree](screenshots/01-browse-generate-fully-expanded.png)
+
+**Flow:**
+1. Select a catalog from the tree (e.g., `samples`)
+2. Expand to see schemas (e.g., `nyctaxi`)
+3. Click a table (e.g., `trips`) to load its metadata and columns
+4. Click **"Generate AI Descriptions"** to invoke Claude via FMAPI
+5. Review the AI-generated descriptions for the table and each column
+6. **Approve** (apply as-is), **Edit** (modify then apply), or **Reject** each suggestion
+7. Click **"Apply to Metastore"** to write approved descriptions to Unity Catalog
+
+### Tab 2: Batch Schema Processing
+
+Generate AI descriptions for **ALL tables in a schema** at once. Select a catalog and schema from the dropdowns, then click **"Generate for All Tables"**.
+
+![Batch Schema](screenshots/02-batch-schema-results.png)
+
+**Flow:**
+1. Select a catalog from the dropdown
+2. Select a schema from the dropdown
+3. Click **"Generate for All Tables"**
+4. Results appear expandable per-table with individual approve/apply controls
+5. Review and apply descriptions for each table and its columns
+
+### Tab 3: Responsible AI Rules (Read-Only, Git-Controlled)
+
+Responsible AI rules are defined in `config.yaml` and injected into the AI system prompt for **every** generation request (single and batch). Rules are **read-only** in the UI — to change them, edit `config.yaml` and redeploy.
+
+![Responsible AI Rules](screenshots/03-responsible-ai-rules.png)
+
+The rules textarea is read-only with a note: *"To modify rules, edit `config.yaml` and redeploy."*
+
+**How Rules Are Applied:**
+- Rules are injected into the AI system prompt before every generation request
+- They apply to both single-table and batch schema generation
+- Rules are version-controlled in `config.yaml`
+- Changes require a redeploy to take effect
+- For automated notebooks, export a notebook — rules are embedded in the code
+
+### Tab 4: Audit Log (Co-located)
+
+Every approved or edited description is logged to a co-located Delta table (`_ai_description_audit`) in the **same catalog/schema** as the described tables.
+
+![Audit Log](screenshots/04-audit-log.png)
+
+**Audit entries track:**
+- Who approved the description
+- When it was applied
+- What the AI originally suggested
+- What was actually applied (may differ if edited)
+- Whether it was approved as-is or edited
+
+Select a catalog and schema, then click **"Refresh Audit Log"** to load entries.
+
+### Tab 5: Export as Databricks Notebook
+
+Download a self-contained Python notebook that can be scheduled as a Databricks Workflow job.
+
+![Export Notebook](screenshots/05-export-notebook.png)
+
+**The exported notebook:**
+1. Creates a `_ai_description_reviews` Delta table in the target schema
+2. Iterates all tables in the schema, calls `ai_query()` to generate descriptions
+3. Inserts AI suggestions into the review table with status `pending`
+4. Displays pending suggestions for human review (edit `final_description`, set `status='approved'`)
+5. Applies all approved descriptions via `COMMENT ON TABLE` / `ALTER COLUMN COMMENT`
+6. Tracks full audit trail: who approved, when, AI vs final description
+
+**Scheduling as a Job:**
+- Upload the notebook to your workspace
+- Create a Databricks Workflow with two tasks:
+  - **Task 1:** Run the "Generate" cells on a schedule (e.g., weekly)
+  - **Task 2:** Human reviewers approve in the Delta table using SQL or a notebook UI
+  - **Task 3:** Run the "Apply" cells to commit approved descriptions to Unity Catalog
+
+---
 
 ## Configuration
 
@@ -228,6 +245,8 @@ targets:
 | `audit.table_name` | `_ai_description_audit` | Name of the co-located audit table |
 | `exclusions.catalogs` | `["__databricks_internal", "system"]` | Catalogs hidden from the browse tree |
 | `exclusions.schemas` | `["information_schema"]` | Schemas hidden from the browse tree |
+
+---
 
 ## Project Structure
 
@@ -281,18 +300,39 @@ uvicorn app:app --reload --port 8000
 # Open http://localhost:8000
 ```
 
+## Updating the App
+
+After code changes:
+```bash
+databricks bundle deploy --profile <your-profile>
+databricks apps deploy uc-ai-descriptions \
+  --source-code-path /Workspace/Users/<your-email>/.bundle/uc-ai-descriptions/dev/files \
+  -p <your-profile>
+```
+
+## Viewing App Logs
+
+```
+https://uc-ai-descriptions-<workspace-id>.azure.databricksapps.com/logz
+```
+
+Or via CLI:
+```bash
+databricks apps logs uc-ai-descriptions --tail-lines 50 -p <your-profile>
+```
+
 ## E2E Test Results
 
 All endpoints verified against the live deployment:
 
 ```
-1/9: Health Check             ✓  {"status":"ok"}
-2/9: Settings                 ✓  config.yaml loaded, rules present, exclusions active
-3/9: Rules (read-only)        ✓  Returns rules from config.yaml
-4/9: POST /rules rejected     ✓  405 Method Not Allowed (rules are git-controlled)
-5/9: List Catalogs            ✓  3 catalogs returned (system/internal excluded)
-6/9: List Schemas             ✓  8 schemas (information_schema excluded)
-7/9: List Tables              ✓  Tables listed with metadata
-8/9: List Warehouses          ✓  Warehouse ID, name, state, type returned
-9/9: AI Generation            ✓  Claude generated table + column descriptions via FMAPI
+ 1/9: Health Check             pass  {"status":"ok"}
+ 2/9: Settings                 pass  config.yaml loaded, rules present, exclusions active
+ 3/9: Rules (read-only)        pass  Returns rules from config.yaml
+ 4/9: POST /rules rejected     pass  405 Method Not Allowed (rules are git-controlled)
+ 5/9: List Catalogs            pass  3 catalogs returned (system/internal excluded)
+ 6/9: List Schemas             pass  8 schemas (information_schema excluded)
+ 7/9: List Tables              pass  Tables listed with metadata
+ 8/9: List Warehouses          pass  Warehouse ID, name, state, type returned
+ 9/9: AI Generation            pass  Claude generated table + column descriptions via FMAPI
 ```
