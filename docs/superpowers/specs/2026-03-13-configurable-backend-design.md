@@ -14,7 +14,7 @@ The app has hardcoded values tied to a specific customer deployment (audit table
 
 ## Non-Goals
 
-- Frontend redesign (deferred to a follow-up)
+- Frontend redesign (deferred to a follow-up; minimal fixes included where backend changes would break visible features)
 - Runtime config persistence (all config is git-controlled)
 - Multi-tenant support
 
@@ -86,11 +86,12 @@ responsible_ai_rules: |
   - Never include PII field names or example values in descriptions.
   - Use business-friendly language suitable for a data catalog audience.
 
-# Audit table naming.
-# The audit table is created in the same catalog/schema as the tables being described.
-# This is the table name within that schema (not a suffix appended to another name).
+# Centralized audit table — full three-part name.
+# The app's SP needs CREATE TABLE + INSERT on this schema.
+# Keep in a dedicated catalog/schema separate from described data
+# to enforce append-only governance (data owners can't modify their own audit trail).
 audit:
-  table_name: "_ai_description_audit"
+  table: "governance.ai_descriptions.audit_log"
 
 # Catalogs and schemas to exclude from the browse tree.
 exclusions:
@@ -101,11 +102,19 @@ exclusions:
     - "information_schema"
 ```
 
+### Relationship with `app.yaml`
+
+The existing `app.yaml` is kept and updated with the new environment variables (`WAREHOUSE_ID`, `APP_TITLE`). Both files coexist:
+- **`app.yaml`** — read by the Databricks Apps runtime for direct `databricks apps deploy` deployments
+- **`databricks.yml`** — used by DAB (`databricks bundle deploy`), overrides `app.yaml` settings with bundle variable values
+
+This ensures the app works with both deployment methods.
+
 ### Config separation
 
 The two layers control distinct, non-overlapping settings:
 - **`databricks.yml` env vars** control infrastructure: `serving_endpoint`, `warehouse_id`, `app_title`
-- **`config.yaml`** controls app behavior: responsible AI rules, audit table name, catalog/schema exclusions
+- **`config.yaml`** controls app behavior: responsible AI rules, centralized audit table path, catalog/schema exclusions
 
 There is no overlap by design. If a future setting needs per-environment variation, it should be added as a bundle variable → env var.
 
@@ -139,7 +148,7 @@ Key config fields:
 - `warehouse_id: str | None` (from env var `WAREHOUSE_ID`, empty string = auto-detect)
 - `app_title: str` (from env var `APP_TITLE`)
 - `responsible_ai_rules: str` (from `config.yaml`)
-- `audit_table_name: str` (from `config.yaml`)
+- `audit_table: str` (from `config.yaml`, full three-part name e.g. `governance.ai_descriptions.audit_log`)
 - `excluded_catalogs: list[str]` (from `config.yaml`)
 - `excluded_schemas: list[str]` (from `config.yaml`)
 
@@ -155,17 +164,16 @@ Create a single module responsible for warehouse ID resolution:
 
 Update `catalog.py` and `audit.py` to import from `warehouse.py` instead of duplicating the warehouse lookup logic.
 
-### Step 5: Parameterize `audit.py` + update calling routes
+### Step 5: Parameterize `audit.py` (centralized audit table)
 
-**Files:** `server/audit.py`, `server/routes.py`, `README.md`
+**Files:** `server/audit.py`, `README.md`
 
 - Remove the hardcoded `AUDIT_TABLE = "cat_nsp_z5zw62.retail_demo._ai_description_audit"` constant
-- All audit functions accept `catalog_name` and `schema_name` parameters and derive the full audit table path as `{catalog}.{schema}.{audit_table_name}` using the configured `audit_table_name` from config
-- The audit table lives in the **same catalog/schema as the table being described**. This means audit entries may span multiple schemas if the user describes tables across schemas. This is intentional — it keeps audit data co-located with the data it describes.
-- Update `ensure_audit_table()`, `log_action()`, `log_batch()`, and `get_audit_log()` signatures
-- Use `get_warehouse_id()` from the new warehouse module
-- **Update `routes.py`**: the existing `POST /api/apply/batch` and `GET /api/audit` endpoints must parse the `full_name` (e.g., `catalog.schema.table`) to extract catalog and schema, then pass them to the audit functions
-- Update README to remove manual audit table creation (now auto-created in the user's chosen schema)
+- Read the audit table path from `app_config.audit_table` (full three-part name from `config.yaml`)
+- Use `resolve_warehouse_id()` from the new warehouse module
+- Function signatures stay the same — no catalog/schema routing needed since the audit table is centralized
+- The `GET /api/audit` endpoint is unchanged (still reads from one table), so the frontend keeps working
+- Update README: document the audit table setup (dedicated catalog/schema, INSERT-only grant for the app SP)
 
 ### Step 6: Parameterize `ai_gen.py` + update calling routes
 
@@ -176,6 +184,7 @@ Update `catalog.py` and `audit.py` to import from `warehouse.py` instead of dupl
 - Read the model endpoint from config instead of hardcoding
 - Update `generate_notebook_code()` to inject the configured model name and rules rather than hardcoded values
 - **Update `routes.py`**: the `POST /export-notebook` endpoint currently calls `ai_gen.get_custom_rules()` which is being removed — update it to pass rules from config. The `GET /api/rules` endpoint becomes a read-only view of config; the `POST /api/rules` endpoint is removed (rules are git-controlled now).
+- **Update `static/index.html`**: make the Responsible AI Rules tab read-only (textarea readonly, remove Save/Clear buttons, update help text) so the frontend doesn't break when `POST /api/rules` is removed.
 
 ### Step 7: Parameterize `catalog.py`
 
@@ -198,7 +207,7 @@ Update `catalog.py` and `audit.py` to import from `warehouse.py` instead of dupl
 
 **Files:** `server/catalog.py`, `server/audit.py`
 
-- **Identifier injection**: `full_name` and `column_name` are interpolated directly into DDL. Validate that they match expected patterns (e.g., `catalog.schema.table`) and quote with backticks to prevent SQL injection via crafted table/column names. Same applies to the audit table path derived from user-selected catalog/schema.
+- **Identifier injection**: `full_name` and `column_name` are interpolated directly into DDL. Validate that they match expected patterns (e.g., `catalog.schema.table`) and quote with backticks to prevent SQL injection via crafted table/column names. Same applies to the configured audit table path.
 - For `COMMENT ON TABLE` and `ALTER COLUMN COMMENT` DDL statements (which cannot use parameterized queries), replace the minimal `replace("'", "\\'")` with proper escaping that also handles backslashes and other special characters
 - For audit log INSERT statements, use parameterized queries via the statement execution API where supported
 - For audit log SELECT statements, use parameterized queries for the WHERE clause filter

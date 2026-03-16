@@ -35,7 +35,7 @@ responsible_ai_rules: |
   - Use business-friendly language suitable for a data catalog audience.
 
 audit:
-  table_name: "_ai_description_audit"
+  table: "governance.ai_descriptions.audit_log"
 
 exclusions:
   catalogs:
@@ -53,7 +53,7 @@ The current deployment requires 6+ manual CLI commands to upload files and deplo
 databricks bundle deploy -t dev
 ```
 
-The existing `app.yaml` is removed (its contents are absorbed into `databricks.yml`).
+The existing `app.yaml` is updated to include the new environment variables (`WAREHOUSE_ID`, `APP_TITLE`). Both files coexist: `app.yaml` serves direct `databricks apps deploy` deployments, while `databricks.yml` overrides its settings for DAB deployments.
 
 ### 3. Centralized warehouse resolution
 
@@ -62,9 +62,9 @@ Currently, both `catalog.py` and `audit.py` independently call `w.warehouses.lis
 - Otherwise auto-detects, preferring running warehouses
 - Caches the result for the app's lifetime
 
-### 4. Audit table co-location
+### 4. Centralized audit table (configurable location)
 
-Instead of one hardcoded audit table, the audit table is auto-created **in the same catalog/schema as the tables being described**. If you describe tables in `prod_catalog.sales`, the audit table lands at `prod_catalog.sales._ai_description_audit`. The table name is configurable via `config.yaml`.
+Instead of a hardcoded audit table path, the audit table location is configured in `config.yaml` as a full three-part name. The app's service principal gets INSERT-only access; table/schema owners in described catalogs have no access to the audit trail. This enforces append-only semantics and prevents anyone with data permissions from tampering with the change log.
 
 ### 5. Responsible AI rules become git-controlled
 
@@ -93,16 +93,15 @@ Currently stored in an in-memory global variable — lost on every restart, set 
 
 | Change | Impact | Migration |
 |--------|--------|-----------|
-| `POST /api/rules` removed | Frontend "Save Rules" button will stop working | Rules are now in `config.yaml` — frontend update needed (deferred) |
-| `GET /api/audit` now requires `catalog_name` and `schema_name` query params | Frontend audit tab will need updating | Audit table is per-schema now, so the frontend must specify which schema to query |
-| `app.yaml` deleted | Anyone with scripts referencing it | Replaced by `databricks.yml` |
+| `POST /api/rules` removed | Frontend "Save Rules" button becomes read-only | Frontend updated in same task: textarea disabled, buttons removed, help text updated |
+| `app.yaml` updated | Anyone parsing `app.yaml` for env vars | New env vars added (`WAREHOUSE_ID`, `APP_TITLE`); still compatible with `databricks apps deploy` |
 
 ## Trade-offs and Decisions
 
-### Audit table per-schema vs. centralized
-**Chosen:** Per-schema (co-located with described tables).
-**Alternative:** Single centralized audit table.
-**Rationale:** Co-location keeps audit data next to the data it describes, requires fewer cross-schema permissions, and naturally scopes audit queries. The downside is that querying audit across all schemas requires knowing which schemas to check.
+### Centralized audit table vs. per-schema co-location
+**Chosen:** Single centralized audit table in a dedicated catalog/schema.
+**Alternative:** Per-schema co-location (audit table next to described tables).
+**Rationale:** A centralized table enforces proper governance — the app's SP gets INSERT-only access, while table/schema owners in described catalogs have no ability to modify the audit trail. Co-location would inherit permissions from the parent schema, allowing data owners to tamper with their own audit records. The centralized approach also simplifies the code (no per-schema routing) and keeps the `GET /api/audit` endpoint backward-compatible with the existing frontend.
 
 ### Config in YAML file vs. Delta table
 **Chosen:** YAML file in git.
@@ -116,7 +115,7 @@ Currently stored in an in-memory global variable — lost on every restart, set 
 
 ## Open Questions
 
-1. **Audit table permissions:** The app's service principal needs CREATE TABLE on every schema the user describes tables in. Is this acceptable, or should we document a narrower permission model?
+1. **Audit table permissions:** The app's service principal needs CREATE TABLE + INSERT on the configured audit schema (e.g., `governance.ai_descriptions`). This is a one-time setup. The audit table should be append-only from the app's perspective — grant only INSERT, not UPDATE/DELETE.
 
 2. **Notebook export:** The exported notebook currently hardcodes the model name. The proposal updates it to use the configured value. Should the notebook also embed the Responsible AI rules, or should it reference them from a separate source?
 
@@ -136,6 +135,6 @@ The work is broken into 12 small tasks across 4 chunks, each producing an indepe
 | 1: Foundation | 1-4 | Add `databricks.yml`, `config.yaml`, expand config loader, extract warehouse module |
 | 2: Parameterize | 5-7 | Remove hardcoded values from audit, ai_gen, and catalog modules |
 | 3: Endpoints + Safety | 8-9 | Add settings/warehouse API endpoints, improve SQL escaping |
-| 4: Docs + Cleanup | 10-12 | Update README, remove `app.yaml`, final verification |
+| 4: Docs + Cleanup | 10-12 | Update README, update `app.yaml` with new env vars, final verification |
 
-No frontend changes are included — that's a separate follow-up after the backend is solid.
+Minimal frontend changes are included only where a backend change would break a visible feature (e.g., the rules tab is made read-only when `POST /api/rules` is removed). The broader frontend refactor is a separate follow-up.

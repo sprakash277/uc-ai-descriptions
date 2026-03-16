@@ -123,11 +123,12 @@ responsible_ai_rules: |
   - Never include PII field names or example values in descriptions.
   - Use business-friendly language suitable for a data catalog audience.
 
-# Audit table naming.
-# The audit table is auto-created in the same catalog/schema as the tables being described.
-# This is the table name within that schema (not a suffix appended to another name).
+# Centralized audit table — full three-part name.
+# The app's SP needs CREATE TABLE + INSERT on this schema.
+# Keep in a dedicated catalog/schema separate from described data
+# to enforce append-only governance (data owners can't modify their own audit trail).
 audit:
-  table_name: "_ai_description_audit"
+  table: "governance.ai_descriptions.audit_log"
 
 # Catalogs and schemas to exclude from the browse tree.
 exclusions:
@@ -220,7 +221,7 @@ class TestAppConfig:
         assert cfg.warehouse_id is None
         assert cfg.app_title == "Unity Catalog AI Descriptions"
         assert cfg.responsible_ai_rules == ""
-        assert cfg.audit_table_name == "_ai_description_audit"
+        assert cfg.audit_table == "governance.ai_descriptions.audit_log"
         assert "__databricks_internal" in cfg.excluded_catalogs
         assert "information_schema" in cfg.excluded_schemas
 
@@ -230,7 +231,7 @@ class TestAppConfig:
         with tempfile.TemporaryDirectory() as tmp:
             data = {
                 "responsible_ai_rules": "No PII allowed.",
-                "audit": {"table_name": "_custom_audit"},
+                "audit": {"table": "_custom_audit"},
                 "exclusions": {
                     "catalogs": ["hidden_catalog"],
                     "schemas": ["hidden_schema"],
@@ -239,7 +240,7 @@ class TestAppConfig:
             path = _write_config(tmp, data)
             cfg = load_config(path)
             assert cfg.responsible_ai_rules == "No PII allowed."
-            assert cfg.audit_table_name == "_custom_audit"
+            assert cfg.audit_table == "_custom_audit"
             assert cfg.excluded_catalogs == ["hidden_catalog"]
             assert cfg.excluded_schemas == ["hidden_schema"]
 
@@ -307,7 +308,7 @@ class AppConfig:
 
     # App behavior settings (from config.yaml)
     responsible_ai_rules: str = ""
-    audit_table_name: str = "_ai_description_audit"
+    audit_table: str = "governance.ai_descriptions.audit_log"
     excluded_catalogs: list[str] = field(
         default_factory=lambda: ["__databricks_internal", "system"]
     )
@@ -336,8 +337,8 @@ def load_config(config_path: str = "") -> AppConfig:
                 data = yaml.safe_load(f) or {}
             if "responsible_ai_rules" in data:
                 cfg.responsible_ai_rules = str(data["responsible_ai_rules"]).strip()
-            if "audit" in data and "table_name" in data["audit"]:
-                cfg.audit_table_name = data["audit"]["table_name"]
+            if "audit" in data and "table" in data["audit"]:
+                cfg.audit_table = data["audit"]["table"]
             if "exclusions" in data:
                 exc = data["exclusions"]
                 if "catalogs" in exc:
@@ -607,13 +608,14 @@ git commit -m "refactor: extract warehouse.py, centralize warehouse resolution"
 
 ## Chunk 2: Parameterize Core Modules
 
-### Task 5: Parameterize `audit.py` + update routes
+### Task 5: Parameterize `audit.py` (centralized audit table)
 
 **Files:**
-- Modify: `server/audit.py` (remove hardcoded `AUDIT_TABLE`, add catalog/schema params)
-- Modify: `server/routes.py:172-227, 277-285` (pass catalog/schema to audit calls)
+- Modify: `server/audit.py` (remove hardcoded `AUDIT_TABLE`, read from config)
 
-- [ ] **Step 1: Update `audit.py` — remove hardcoded table, add params**
+The audit table stays centralized (one table, configurable location) rather than per-schema. This enforces governance — the app's SP gets INSERT-only access on a dedicated schema, and data owners can't modify their own audit trail. It also keeps the `GET /api/audit` endpoint and frontend unchanged.
+
+- [ ] **Step 1: Update `audit.py` — remove hardcoded table, use config**
 
 In `server/audit.py`:
 
@@ -628,121 +630,54 @@ from .config import get_workspace_client, app_config
 from .warehouse import resolve_warehouse_id
 ```
 
-Add a helper to derive the audit table path:
+Replace all references to `AUDIT_TABLE` with `app_config.audit_table`. The function signatures stay the same — no new parameters needed since we're reading from config, not routing per-schema.
+
+In `ensure_audit_table()`:
 ```python
-def _audit_table_path(catalog_name: str, schema_name: str) -> str:
-    """Derive the full audit table path for a given catalog/schema."""
-    return f"`{catalog_name}`.`{schema_name}`.`{app_config.audit_table_name}`"
+    sql = f"""
+    CREATE TABLE IF NOT EXISTS {app_config.audit_table} (
+    ...
+    """
 ```
 
-Update function signatures — add `catalog_name` and `schema_name` parameters:
-
-`ensure_audit_table(catalog_name: str, schema_name: str) -> bool:` — replace `{AUDIT_TABLE}` with `{_audit_table_path(catalog_name, schema_name)}`
-
-`log_action(catalog_name: str, schema_name: str, full_table_name, item_type, item_name, previous_description, ai_suggested_description, final_description, action, applied_by="app_user") -> bool:` — catalog_name/schema_name first (required), applied_by last (has default)
-
-`log_batch(catalog_name: str, schema_name: str, full_table_name, actions, applied_by="app_user") -> int:` — pass catalog_name/schema_name through to `log_action`
-
-`get_audit_log(catalog_name: str, schema_name: str, full_table_name=None, limit=50) -> list[dict]:` — same replacement
-
-- [ ] **Step 2: Add helper to parse catalog/schema from full_name**
-
-Add to the top of `server/audit.py` (or in `routes.py` where it's used):
-
+In `log_action()`:
 ```python
-def parse_full_name(full_name: str) -> tuple[str, str, str]:
-    """Parse 'catalog.schema.table' into (catalog, schema, table)."""
-    parts = full_name.split(".")
-    if len(parts) != 3:
-        raise ValueError(f"Expected catalog.schema.table format, got: {full_name}")
-    return parts[0], parts[1], parts[2]
+    sql = f"""
+    INSERT INTO {app_config.audit_table}
+    VALUES (...)
+    """
 ```
 
-- [ ] **Step 3: Update `routes.py` — `POST /api/apply/batch`**
-
-In the `apply_batch` function (`routes.py:172-227`), parse the full_name to get catalog/schema, then pass to audit calls:
-
+In `get_audit_log()`:
 ```python
-@router.post("/apply/batch")
-async def apply_batch(req: ApplyBatchRequest):
-    """Apply approved table and column descriptions in one call, with audit logging."""
-    # Parse catalog/schema for audit table co-location
-    try:
-        cat, sch, _ = audit.parse_full_name(req.full_name)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-    results = {"table": None, "columns": {}, "errors": []}
-    audit_actions = []
-
-    try:
-        # ... existing table_comment and column_comments logic unchanged
-        # (the if req.table_comment: and for col_name, comment blocks stay as-is) ...
-
-        # Write audit log
-        if audit_actions:
-            try:
-                audit.ensure_audit_table(cat, sch)
-                logged = audit.log_batch(
-                    cat, sch,
-                    req.full_name, audit_actions,
-                )
-                results["audit_logged"] = logged
-            except Exception as e:
-                logger.error("Audit logging failed: %s", e)
-                results["audit_logged"] = 0
-
-        return {"status": "success", "results": results}
-    except Exception as e:
-        logger.error("Batch apply failed: %s", traceback.format_exc())
-        raise HTTPException(status_code=500, detail=str(e))
+    sql = f"""
+    SELECT * FROM {app_config.audit_table}
+    ...
+    """
 ```
 
-- [ ] **Step 4: Update `routes.py` — `GET /api/audit`**
+- [ ] **Step 2: Verify the `GET /api/audit` endpoint still works unchanged**
 
-The audit endpoint needs catalog/schema to know which audit table to query. Add required query params:
-
-```python
-@router.get("/audit")
-async def get_audit_log(
-    catalog_name: str,
-    schema_name: str,
-    table: Optional[str] = None,
-    limit: int = 50,
-):
-    try:
-        audit.ensure_audit_table(catalog_name, schema_name)
-        entries = audit.get_audit_log(
-            catalog_name=catalog_name,
-            schema_name=schema_name,
-            full_table_name=table,
-            limit=limit,
-        )
-        return {"entries": entries, "count": len(entries)}
-    except Exception as e:
-        logger.error("Audit log query failed: %s", traceback.format_exc())
-        raise HTTPException(status_code=500, detail=str(e))
-```
-
-- [ ] **Step 5: Verify app imports cleanly**
+The `routes.py` audit endpoint (`GET /api/audit`) calls `audit.ensure_audit_table()` and `audit.get_audit_log()` — neither signature has changed, so `routes.py` needs no modifications. The frontend calls `GET /api/audit` with no params and continues to work.
 
 Run: `python -c "from server import routes; print('OK')"`
 Expected: `OK`
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 3: Commit**
 
 ```bash
-git add server/audit.py server/routes.py
-git commit -m "feat: parameterize audit table — co-located with described tables"
+git add server/audit.py
+git commit -m "feat: centralized configurable audit table, replace hardcoded path"
 ```
 
 ---
 
-### Task 6: Parameterize `ai_gen.py` + update routes
+### Task 6: Parameterize `ai_gen.py` + update routes + update frontend rules tab
 
 **Files:**
 - Modify: `server/ai_gen.py:25-43, 67, 115-376` (remove globals, use config)
 - Modify: `server/routes.py:230-244, 254-272` (update rules + notebook endpoints)
+- Modify: `static/index.html` (make rules tab read-only so it doesn't break)
 
 - [ ] **Step 1: Update `ai_gen.py` — remove globals, use config**
 
@@ -851,16 +786,38 @@ async def export_notebook(req: NotebookExportRequest):
         raise HTTPException(status_code=500, detail=str(e))
 ```
 
-- [ ] **Step 4: Verify app imports cleanly**
+- [ ] **Step 4: Update frontend rules tab to read-only**
+
+In `static/index.html`, make the Responsible AI Rules tab reflect that rules are now git-controlled. The `GET /api/rules` endpoint still works (returns config-driven rules), so `loadRules()` still populates the textarea — we just need to prevent editing.
+
+Update the textarea (line ~347 area) — add `readonly` and adjust placeholder:
+```html
+      <textarea class="rules-textarea" id="custom-rules" readonly placeholder="Rules are managed via config.yaml — edit the file and redeploy to change."
+```
+
+Remove the Save and Clear buttons (lines ~347-348), replace with an info message:
+```html
+        <span style="color:var(--text-dim); font-size:13px;">Rules are managed via config.yaml and applied on deploy.</span>
+```
+
+Update the help text (lines ~357-358) — replace the session persistence bullets:
+```html
+        <li>Rules are defined in <code>config.yaml</code> and version-controlled via git</li>
+        <li>To change rules, edit <code>config.yaml</code> and redeploy the app</li>
+```
+
+The `loadRules()` and `saveRules()` JS functions: `loadRules()` still works (reads from `GET /api/rules`). `saveRules()` and `clearRules()` are now dead code — leave them for now (no buttons call them). They'll be cleaned up in the frontend refactor phase.
+
+- [ ] **Step 5: Verify app imports cleanly**
 
 Run: `python -c "from server import routes; print('OK')"`
 Expected: `OK`
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add server/ai_gen.py server/routes.py
-git commit -m "feat: ai_gen reads model + rules from config, remove in-memory globals"
+git add server/ai_gen.py server/routes.py static/index.html
+git commit -m "feat: ai_gen reads model + rules from config, remove in-memory globals, make rules tab read-only"
 ```
 
 ---
@@ -944,7 +901,7 @@ async def get_settings():
         "warehouse_id": wh_id,
         "warehouse_configured": bool(app_config.warehouse_id),
         "responsible_ai_rules": app_config.responsible_ai_rules,
-        "audit_table_name": app_config.audit_table_name,
+        "audit_table": app_config.audit_table,
         "exclusions": {
             "catalogs": app_config.excluded_catalogs,
             "schemas": app_config.excluded_schemas,
@@ -1228,7 +1185,7 @@ Update `log_action()` to use parameterized queries for the INSERT values. Replac
 ```python
     from databricks.sdk.service.sql import StatementParameterListItem
 
-    audit_table = _audit_table_path(catalog_name, schema_name)
+    audit_table = quote_identifier(app_config.audit_table)
     sql = f"""
     INSERT INTO {audit_table}
     VALUES (:full_table_name, :item_type, :item_name, :previous,
@@ -1262,13 +1219,12 @@ Similarly, update `get_audit_log()` WHERE clause to use a parameter when filteri
 
 Remove the inline `esc()` function (no longer needed for audit).
 
-Update `_audit_table_path` to use `quote_identifier`:
+Update audit SQL to quote the configured table path:
 ```python
-def _audit_table_path(catalog_name: str, schema_name: str) -> str:
-    """Derive the full audit table path for a given catalog/schema."""
-    raw = f"{catalog_name}.{schema_name}.{app_config.audit_table_name}"
-    return quote_identifier(raw)
+    audit_table = quote_identifier(app_config.audit_table)
 ```
+
+Use `audit_table` in place of the raw `app_config.audit_table` in all SQL statements (`ensure_audit_table`, `log_action`, `get_audit_log`).
 
 - [ ] **Step 7: Run all tests**
 
@@ -1336,7 +1292,7 @@ Set per-environment in the `targets` section or override at deploy time with `--
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `responsible_ai_rules` | (see file) | Rules injected into AI system prompt |
-| `audit.table_name` | `_ai_description_audit` | Audit table created in each described schema |
+| `audit.table` | `governance.ai_descriptions.audit_log` | Centralized audit table (full three-part name) |
 | `exclusions.catalogs` | `__databricks_internal`, `system` | Catalogs hidden from browse tree |
 | `exclusions.schemas` | `information_schema` | Schemas hidden from browse tree |
 ```
@@ -1356,7 +1312,7 @@ Add the new endpoints and mark the removed one:
 - [ ] **Step 5: Update Project Structure section**
 
 Update the project structure tree in README to:
-- Remove `app.yaml` (will be deleted in Task 11)
+- Keep `app.yaml` (updated in Task 11 with new env vars)
 - Add `databricks.yml`
 - Add `config.yaml`
 - Add `server/warehouse.py`
@@ -1372,29 +1328,46 @@ git commit -m "docs: update README for DAB deployment and configuration"
 
 ---
 
-### Task 11: Remove `app.yaml` (superseded by `databricks.yml`)
+### Task 11: Update `app.yaml` with new environment variables
 
 **Files:**
-- Delete: `app.yaml`
+- Modify: `app.yaml`
 
-- [ ] **Step 1: Verify `databricks.yml` contains all app.yaml settings**
+`app.yaml` is required by the Databricks Apps runtime for direct `databricks apps deploy` deployments. It coexists with `databricks.yml`: the bundle config overrides these settings for DAB deployments, while `app.yaml` serves as the base config for non-DAB deployments.
 
-The `app.yaml` currently defines:
-- `command: ["python", "-m", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]`
-- `env: SERVING_ENDPOINT=databricks-claude-sonnet-4-6`
+- [ ] **Step 1: Update `app.yaml` to include new env vars**
 
-Both are now in `databricks.yml` under `resources.apps.uc_ai_descriptions.config`.
+The current `app.yaml` only defines `SERVING_ENDPOINT`. Add `WAREHOUSE_ID` and `APP_TITLE` with sensible defaults:
 
-- [ ] **Step 2: Delete `app.yaml`**
+```yaml
+command:
+  - "python"
+  - "-m"
+  - "uvicorn"
+  - "app:app"
+  - "--host"
+  - "0.0.0.0"
+  - "--port"
+  - "8000"
 
-```bash
-git rm app.yaml
+env:
+  - name: SERVING_ENDPOINT
+    value: databricks-claude-sonnet-4-6
+  - name: WAREHOUSE_ID
+    value: ""
+  - name: APP_TITLE
+    value: "Unity Catalog AI Descriptions"
 ```
+
+- [ ] **Step 2: Verify both config files are consistent**
+
+Confirm that the env var names and defaults in `app.yaml` match the corresponding variables in `databricks.yml`.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git commit -m "chore: remove app.yaml, superseded by databricks.yml"
+git add app.yaml
+git commit -m "chore: update app.yaml with WAREHOUSE_ID and APP_TITLE env vars"
 ```
 
 ---
