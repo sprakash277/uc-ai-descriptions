@@ -359,28 +359,15 @@
     <div class="section">
       <div class="section-title">&#128203; Description Change Audit Log</div>
       <p style="color:var(--text-dim); font-size:13px; margin-bottom:12px;">
-        Every approved or edited description is logged to a co-located Delta table with full provenance:
+        Every approved or edited description is logged to a centralized audit table with full provenance:
         who approved it, when, what the AI suggested vs what was actually applied.
-        Select a catalog and schema to view its audit entries.
       </p>
       <div style="display:flex; gap:12px; align-items:flex-end; flex-wrap:wrap; margin-bottom:16px;">
-        <div>
-          <div style="font-size:12px; color:var(--text-dim); margin-bottom:4px;">Catalog</div>
-          <select id="audit-catalog" onchange="loadAuditSchemas()" style="padding:8px 12px; background:var(--bg); border:1px solid var(--border); border-radius:var(--radius); color:var(--text); font-size:14px; min-width:200px;">
-            <option value="">Select catalog...</option>
-          </select>
-        </div>
-        <div>
-          <div style="font-size:12px; color:var(--text-dim); margin-bottom:4px;">Schema</div>
-          <select id="audit-schema" style="padding:8px 12px; background:var(--bg); border:1px solid var(--border); border-radius:var(--radius); color:var(--text); font-size:14px; min-width:200px;">
-            <option value="">Select schema...</option>
-          </select>
-        </div>
         <button class="btn btn-primary" onclick="loadAuditLog()">Refresh Audit Log</button>
         <span id="audit-count" style="color:var(--text-dim); font-size:13px;"></span>
       </div>
       <div id="audit-table-container">
-        <div class="loading-inline">Select a catalog and schema, then click "Refresh Audit Log" to load entries.</div>
+        <div class="loading-inline">Click "Refresh Audit Log" to load entries.</div>
       </div>
     </div>
   </div>
@@ -738,7 +725,7 @@ async function applyApproved() {
 // ── Catalog Dropdowns (Batch & Notebook tabs) ──────────────
 async function loadCatalogDropdowns() {
   const data = await apiFetch(`${API}/catalogs`);
-  for (const id of ['batch-catalog', 'nb-catalog', 'audit-catalog']) {
+  for (const id of ['batch-catalog', 'nb-catalog']) {
     const sel = document.getElementById(id);
     const current = sel.value;
     sel.innerHTML = '<option value="">Select catalog...</option>';
@@ -767,15 +754,7 @@ async function loadNbSchemas() {
   data.schemas.forEach(s => { const opt = document.createElement('option'); opt.value = s.name; opt.text = s.name; sel.appendChild(opt); });
 }
 
-async function loadAuditSchemas() {
-  const cat = document.getElementById('audit-catalog').value;
-  const sel = document.getElementById('audit-schema');
-  sel.innerHTML = '<option value="">Loading...</option>';
-  if (!cat) { sel.innerHTML = '<option value="">Select schema...</option>'; return; }
-  const data = await apiFetch(`${API}/schemas/${cat}`);
-  sel.innerHTML = '<option value="">Select schema...</option>';
-  data.schemas.forEach(s => { const opt = document.createElement('option'); opt.value = s.name; opt.text = s.name; sel.appendChild(opt); });
-}
+// loadAuditSchemas removed — audit table is now centralized
 
 // ── Batch Generate ─────────────────────────────────────────
 async function runBatchGenerate() {
@@ -888,13 +867,10 @@ async function loadRules() {
 
 // ── Audit Log ──────────────────────────────────────────────
 async function loadAuditLog() {
-  const cat = document.getElementById('audit-catalog').value;
-  const schema = document.getElementById('audit-schema').value;
-  if (!cat || !schema) { showToast('Select a catalog and schema first', true); return; }
   const container = document.getElementById('audit-table-container');
   container.innerHTML = '<div class="loading-inline">Loading audit log...</div>';
   try {
-    const data = await apiFetch(`${API}/audit?catalog_name=${encodeURIComponent(cat)}&schema_name=${encodeURIComponent(schema)}`);
+    const data = await apiFetch(`${API}/audit`);
     document.getElementById('audit-count').textContent = `${data.count} entries`;
     if (data.entries.length === 0) {
       container.innerHTML = '<div class="loading-inline">No audit entries yet. Apply some descriptions to see the log.</div>';

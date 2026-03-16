@@ -1,4 +1,4 @@
-"""Audit logging — write description approvals to a co-located Delta table."""
+"""Audit logging — write description approvals to a centralized Delta table."""
 
 import logging
 from typing import Optional
@@ -10,25 +10,12 @@ from .sql_utils import escape_comment
 logger = logging.getLogger(__name__)
 
 
-def _audit_table_path(catalog_name: str, schema_name: str) -> str:
-    """Build the full audit table path co-located with the described tables."""
-    return f"{catalog_name}.{schema_name}.{app_config.audit_table_name}"
-
-
-def parse_full_name(full_name: str) -> tuple[str, str, str]:
-    """Parse catalog.schema.table into components."""
-    parts = full_name.split(".")
-    if len(parts) != 3:
-        raise ValueError(f"Expected catalog.schema.table, got: {full_name!r}")
-    return parts[0], parts[1], parts[2]
-
-
-def ensure_audit_table(catalog_name: str, schema_name: str) -> bool:
-    """Create the audit table if it doesn't exist."""
+def ensure_audit_table() -> bool:
+    """Create the centralized audit table if it doesn't exist."""
     from databricks.sdk.service.sql import StatementState
     w = get_workspace_client()
     wh_id = resolve_warehouse_id()
-    table_path = _audit_table_path(catalog_name, schema_name)
+    table_path = app_config.audit_table
 
     sql = f"""
     CREATE TABLE IF NOT EXISTS {table_path} (
@@ -52,8 +39,6 @@ def ensure_audit_table(catalog_name: str, schema_name: str) -> bool:
 
 
 def log_action(
-    catalog_name: str,
-    schema_name: str,
     full_table_name: str,
     item_type: str,
     item_name: str,
@@ -63,11 +48,11 @@ def log_action(
     action: str,
     applied_by: str = "app_user",
 ) -> bool:
-    """Log a single description action to the audit table."""
+    """Log a single description action to the centralized audit table."""
     from databricks.sdk.service.sql import StatementState
     w = get_workspace_client()
     wh_id = resolve_warehouse_id()
-    table_path = _audit_table_path(catalog_name, schema_name)
+    table_path = app_config.audit_table
 
     esc = escape_comment
 
@@ -97,8 +82,6 @@ def log_action(
 
 
 def log_batch(
-    catalog_name: str,
-    schema_name: str,
     full_table_name: str,
     actions: list[dict],
     applied_by: str = "app_user",
@@ -107,8 +90,6 @@ def log_batch(
     success_count = 0
     for a in actions:
         ok = log_action(
-            catalog_name=catalog_name,
-            schema_name=schema_name,
             full_table_name=full_table_name,
             item_type=a["item_type"],
             item_name=a["item_name"],
@@ -124,16 +105,14 @@ def log_batch(
 
 
 def get_audit_log(
-    catalog_name: str,
-    schema_name: str,
     full_table_name: Optional[str] = None,
     limit: int = 50,
 ) -> list[dict]:
-    """Retrieve recent audit log entries."""
+    """Retrieve recent audit log entries from the centralized audit table."""
     from databricks.sdk.service.sql import StatementState
     w = get_workspace_client()
     wh_id = resolve_warehouse_id()
-    table_path = _audit_table_path(catalog_name, schema_name)
+    table_path = app_config.audit_table
 
     where = ""
     if full_table_name:

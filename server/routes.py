@@ -4,7 +4,7 @@ import logging
 import traceback
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
@@ -174,12 +174,6 @@ async def apply_batch(req: ApplyBatchRequest):
     results = {"table": None, "columns": {}, "errors": []}
     audit_actions = []
 
-    # Parse catalog/schema from full_name for co-located audit
-    try:
-        cat, sch, _ = audit.parse_full_name(req.full_name)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
     try:
         if req.table_comment:
             try:
@@ -216,11 +210,11 @@ async def apply_batch(req: ApplyBatchRequest):
                 results["columns"][col_name] = "failed"
                 results["errors"].append(f"Column {col_name}: {e}")
 
-        # Write audit log (co-located with described tables)
+        # Write audit log (centralized table)
         if audit_actions:
             try:
-                audit.ensure_audit_table(cat, sch)
-                logged = audit.log_batch(cat, sch, req.full_name, audit_actions)
+                audit.ensure_audit_table()
+                logged = audit.log_batch(req.full_name, audit_actions)
                 results["audit_logged"] = logged
             except Exception as e:
                 logger.error("Audit logging failed: %s", e)
@@ -249,7 +243,7 @@ async def get_settings():
         "app_title": app_config.app_title,
         "serving_endpoint": app_config.serving_endpoint,
         "warehouse_id": app_config.warehouse_id or "(auto-detect)",
-        "audit_table_name": app_config.audit_table_name,
+        "audit_table": app_config.audit_table,
         "excluded_catalogs": app_config.excluded_catalogs,
         "excluded_schemas": app_config.excluded_schemas,
         "responsible_ai_rules": app_config.responsible_ai_rules,
@@ -306,15 +300,13 @@ async def export_notebook(req: NotebookExportRequest):
 
 @router.get("/audit")
 async def get_audit_log(
-    catalog_name: str = Query(..., description="Catalog containing the audit table"),
-    schema_name: str = Query(..., description="Schema containing the audit table"),
     table: Optional[str] = None,
     limit: int = 50,
 ):
-    """Retrieve audit log from the co-located audit table in the specified catalog.schema."""
+    """Retrieve audit log from the centralized audit table."""
     try:
-        audit.ensure_audit_table(catalog_name, schema_name)
-        entries = audit.get_audit_log(catalog_name, schema_name, full_table_name=table, limit=limit)
+        audit.ensure_audit_table()
+        entries = audit.get_audit_log(full_table_name=table, limit=limit)
         return {"entries": entries, "count": len(entries)}
     except Exception as e:
         logger.error("Audit log query failed: %s", traceback.format_exc())

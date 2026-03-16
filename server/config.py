@@ -22,7 +22,7 @@ class AppConfig:
 
     # App behavior (from config.yaml)
     responsible_ai_rules: str = ""
-    audit_table_name: str = "_ai_description_audit"
+    audit_table: str = "governance.ai_descriptions.audit_log"
     excluded_catalogs: list[str] = field(default_factory=lambda: ["__databricks_internal", "system"])
     excluded_schemas: list[str] = field(default_factory=lambda: ["information_schema"])
 
@@ -45,8 +45,8 @@ def load_config(config_path: Optional[str] = None) -> AppConfig:
 
         config.responsible_ai_rules = data.get("responsible_ai_rules", "").strip()
         audit_cfg = data.get("audit", {})
-        if audit_cfg.get("table_name"):
-            config.audit_table_name = audit_cfg["table_name"]
+        if audit_cfg.get("table"):
+            config.audit_table = audit_cfg["table"]
         exclusions = data.get("exclusions", {})
         if "catalogs" in exclusions:
             config.excluded_catalogs = exclusions["catalogs"]
