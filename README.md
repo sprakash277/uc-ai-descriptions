@@ -22,7 +22,7 @@ Browser  -->  Databricks App (FastAPI)  -->  Foundation Model API (Claude Sonnet
              (browse / apply)             (single + batch)
                     |
                     v
-             Delta Table (Co-located Audit Log)
+             Delta Table (Centralized Audit Log)
 ```
 
 ### Configuration Architecture
@@ -32,7 +32,7 @@ Two-layer git-controlled configuration:
 | Layer | File | Controls |
 |-------|------|----------|
 | Infrastructure | `databricks.yml` | Warehouse ID, serving endpoint, app title (env vars per target) |
-| App Behavior | `config.yaml` | Responsible AI rules, audit table name, catalog/schema exclusions |
+| App Behavior | `config.yaml` | Responsible AI rules, centralized audit table path, catalog/schema exclusions |
 
 ---
 
@@ -55,7 +55,7 @@ responsible_ai_rules: |
   - Do not reference internal system names or implementation details.
 
 audit:
-  table_name: "_ai_description_audit"
+  table: "governance.ai_descriptions.audit_log"
 
 exclusions:
   catalogs:
@@ -109,10 +109,16 @@ databricks apps get uc-ai-descriptions -p <your-profile> | grep service_principa
 Grant Unity Catalog permissions (run in SQL or notebook):
 ```sql
 -- Replace <sp-id> with the SP's UUID
+-- Permissions on data catalogs/schemas the app will describe
 GRANT USE CATALOG ON CATALOG <catalog> TO `<sp-id>`;
 GRANT USE SCHEMA ON SCHEMA <catalog>.<schema> TO `<sp-id>`;
 GRANT SELECT, MODIFY ON SCHEMA <catalog>.<schema> TO `<sp-id>`;
-GRANT CREATE TABLE ON SCHEMA <catalog>.<schema> TO `<sp-id>`;
+
+-- Permissions on the centralized audit table (append-only)
+GRANT USE CATALOG ON CATALOG governance TO `<sp-id>`;
+GRANT USE SCHEMA ON SCHEMA governance.ai_descriptions TO `<sp-id>`;
+GRANT CREATE TABLE ON SCHEMA governance.ai_descriptions TO `<sp-id>`;
+GRANT MODIFY ON SCHEMA governance.ai_descriptions TO `<sp-id>`;
 ```
 
 ### Step 6: Redeploy and Verify
@@ -180,9 +186,9 @@ The rules textarea is read-only with a note: *"To modify rules, edit `config.yam
 - Changes require a redeploy to take effect
 - For automated notebooks, export a notebook — rules are embedded in the code
 
-### Tab 4: Audit Log (Co-located)
+### Tab 4: Audit Log (Centralized)
 
-Every approved or edited description is logged to a co-located Delta table (`_ai_description_audit`) in the **same catalog/schema** as the described tables.
+Every approved or edited description is logged to a centralized Delta table (configured in `config.yaml` as `audit.table`, e.g., `governance.ai_descriptions.audit_log`). The audit table lives in a dedicated catalog/schema, separate from the described data, to enforce append-only governance.
 
 ![Audit Log](screenshots/04-audit-log.png)
 
@@ -193,7 +199,7 @@ Every approved or edited description is logged to a co-located Delta table (`_ai
 - What was actually applied (may differ if edited)
 - Whether it was approved as-is or edited
 
-Select a catalog and schema, then click **"Refresh Audit Log"** to load entries.
+Click **"Refresh Audit Log"** to load entries from the centralized audit table.
 
 ### Tab 5: Export as Databricks Notebook
 
@@ -242,7 +248,7 @@ targets:
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `responsible_ai_rules` | (see file) | Rules injected into every AI generation prompt |
-| `audit.table_name` | `_ai_description_audit` | Name of the co-located audit table |
+| `audit.table` | `governance.ai_descriptions.audit_log` | Centralized audit table (full three-part name) |
 | `exclusions.catalogs` | `["__databricks_internal", "system"]` | Catalogs hidden from the browse tree |
 | `exclusions.schemas` | `["information_schema"]` | Schemas hidden from the browse tree |
 
@@ -264,7 +270,7 @@ uc-ai-descriptions/
     sql_utils.py        # SQL safety (identifier validation, comment escaping)
     catalog.py          # Unity Catalog operations (browse, apply comments)
     ai_gen.py           # AI description generation via FMAPI + notebook export
-    audit.py            # Co-located Delta table audit logging
+    audit.py            # Centralized Delta table audit logging
     routes.py           # All API endpoints
   static/
     index.html          # Single-page frontend (HTML/CSS/JS)
@@ -289,7 +295,7 @@ uc-ai-descriptions/
 | POST | `/api/apply/batch` | Apply multiple comments with audit logging |
 | GET | `/api/rules` | Get Responsible AI rules (read-only, from config.yaml) |
 | POST | `/api/export-notebook` | Download automation notebook |
-| GET | `/api/audit?catalog_name=X&schema_name=Y` | Query co-located audit log entries |
+| GET | `/api/audit` | Query centralized audit log entries |
 
 ## Local Development
 
