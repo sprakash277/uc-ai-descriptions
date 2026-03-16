@@ -8,8 +8,8 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
-from .config import app_config, get_workspace_client
 from . import catalog, ai_gen, audit
+from .config import app_config, get_workspace_client
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
@@ -95,6 +95,7 @@ async def batch_generate_descriptions(req: BatchGenerateRequest):
         errors = []
 
         for t in tables:
+            # Skip audit tables
             if t["name"].startswith("_ai_"):
                 continue
             try:
@@ -142,6 +143,7 @@ class ApplyBatchRequest(BaseModel):
     full_name: str
     table_comment: Optional[str] = None
     column_comments: dict[str, str] = {}
+    # Audit info
     ai_table_suggestion: Optional[str] = None
     ai_column_suggestions: dict[str, str] = {}
     current_table_comment: Optional[str] = None
@@ -210,7 +212,7 @@ async def apply_batch(req: ApplyBatchRequest):
                 results["columns"][col_name] = "failed"
                 results["errors"].append(f"Column {col_name}: {e}")
 
-        # Write audit log (centralized table)
+        # Write audit log
         if audit_actions:
             try:
                 audit.ensure_audit_table()
@@ -226,50 +228,11 @@ async def apply_batch(req: ApplyBatchRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ── Rules (read-only from config.yaml) ────────────────────────────────
+# ── Custom Rules (Responsible AI) ────────────────────────────────────────
 
 @router.get("/rules")
 async def get_rules():
-    """Return Responsible AI rules from config.yaml (read-only)."""
     return {"rules": app_config.responsible_ai_rules}
-
-
-# ── Settings & Warehouses ────────────────────────────────────────────────
-
-@router.get("/settings")
-async def get_settings():
-    """Return current effective app configuration."""
-    return {
-        "app_title": app_config.app_title,
-        "serving_endpoint": app_config.serving_endpoint,
-        "warehouse_id": app_config.warehouse_id or "(auto-detect)",
-        "audit_table": app_config.audit_table,
-        "excluded_catalogs": app_config.excluded_catalogs,
-        "excluded_schemas": app_config.excluded_schemas,
-        "responsible_ai_rules": app_config.responsible_ai_rules,
-    }
-
-
-@router.get("/warehouses")
-async def list_warehouses():
-    """List available SQL warehouses with their state."""
-    try:
-        w = get_workspace_client()
-        warehouses = list(w.warehouses.list())
-        return {
-            "warehouses": [
-                {
-                    "id": wh.id,
-                    "name": wh.name,
-                    "state": str(wh.state) if wh.state else "UNKNOWN",
-                    "warehouse_type": str(wh.warehouse_type) if wh.warehouse_type else "",
-                }
-                for wh in warehouses
-            ]
-        }
-    except Exception as e:
-        logger.error("List warehouses failed: %s", traceback.format_exc())
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ── Notebook Export ──────────────────────────────────────────────────────
@@ -283,7 +246,10 @@ class NotebookExportRequest(BaseModel):
 async def export_notebook(req: NotebookExportRequest):
     """Generate a downloadable Databricks notebook for automated description generation."""
     try:
-        code = ai_gen.generate_notebook_code(req.catalog_name, req.schema_name)
+        code = ai_gen.generate_notebook_code(
+            req.catalog_name,
+            req.schema_name,
+        )
         return PlainTextResponse(
             content=code,
             media_type="text/plain",
@@ -299,17 +265,60 @@ async def export_notebook(req: NotebookExportRequest):
 # ── Audit Log ────────────────────────────────────────────────────────────
 
 @router.get("/audit")
-async def get_audit_log(
-    table: Optional[str] = None,
-    limit: int = 50,
-):
-    """Retrieve audit log from the centralized audit table."""
+async def get_audit_log(table: Optional[str] = None, limit: int = 50):
     try:
         audit.ensure_audit_table()
         entries = audit.get_audit_log(full_table_name=table, limit=limit)
         return {"entries": entries, "count": len(entries)}
     except Exception as e:
         logger.error("Audit log query failed: %s", traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Settings + Warehouse Info ─────────────────────────────────────────
+
+@router.get("/settings")
+async def get_settings():
+    """Return current effective configuration for the settings UI."""
+    from .warehouse import resolve_warehouse_id
+    try:
+        wh_id = resolve_warehouse_id()
+    except Exception:
+        wh_id = None
+
+    return {
+        "app_title": app_config.app_title,
+        "serving_endpoint": app_config.serving_endpoint,
+        "warehouse_id": wh_id,
+        "warehouse_configured": bool(app_config.warehouse_id),
+        "responsible_ai_rules": app_config.responsible_ai_rules,
+        "audit_table": app_config.audit_table,
+        "exclusions": {
+            "catalogs": app_config.excluded_catalogs,
+            "schemas": app_config.excluded_schemas,
+        },
+    }
+
+
+@router.get("/warehouses")
+async def list_warehouses():
+    """List available SQL warehouses for the settings UI dropdown."""
+    try:
+        w = get_workspace_client()
+        warehouses = list(w.warehouses.list())
+        return {
+            "warehouses": [
+                {
+                    "id": wh.id,
+                    "name": wh.name,
+                    "state": wh.state.value if wh.state else "UNKNOWN",
+                    "warehouse_type": wh.warehouse_type.value if wh.warehouse_type else "UNKNOWN",
+                }
+                for wh in warehouses
+            ]
+        }
+    except Exception as e:
+        logger.error("List warehouses failed: %s", traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
 
 

@@ -2,11 +2,10 @@
 
 import json
 import logging
-import os
 
 from openai import OpenAI
 
-from .config import app_config, get_oauth_token, get_workspace_host
+from .config import get_oauth_token, get_workspace_host, app_config
 
 logger = logging.getLogger(__name__)
 
@@ -22,12 +21,12 @@ Rules:
 - Do not include the column name or type in the description — the reader already sees those.
 - Return valid JSON only, no markdown fences."""
 
-
 def _build_system_prompt() -> str:
-    """Build system prompt including Responsible AI rules from config."""
+    """Build system prompt including any custom Responsible AI rules."""
     prompt = DEFAULT_SYSTEM_PROMPT
-    if app_config.responsible_ai_rules:
-        prompt += f"\n\nAdditional organizational rules:\n{app_config.responsible_ai_rules}"
+    rules = app_config.responsible_ai_rules
+    if rules:
+        prompt += f"\n\nAdditional organizational rules:\n{rules}"
     return prompt
 
 
@@ -112,8 +111,6 @@ CUSTOM_RULES = """{app_config.responsible_ai_rules}"""
 system_prompt += f"\\n\\nAdditional organizational rules:\\n{{CUSTOM_RULES}}"
 '''
 
-    model = app_config.serving_endpoint
-
     notebook = f'''# Databricks notebook source
 # MAGIC %md
 # MAGIC # AI-Powered Table & Column Descriptions
@@ -138,7 +135,7 @@ system_prompt += f"\\n\\nAdditional organizational rules:\\n{{CUSTOM_RULES}}"
 CATALOG = "{catalog_name}"
 SCHEMA = "{schema_name}"
 REVIEW_TABLE = f"{{CATALOG}}.{{SCHEMA}}._ai_description_reviews"
-MODEL = "{model}"
+MODEL = "{app_config.serving_endpoint}"
 
 # COMMAND ----------
 

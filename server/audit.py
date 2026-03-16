@@ -1,24 +1,28 @@
-"""Audit logging — write description approvals to a centralized Delta table."""
+"""Audit logging — write description approvals to a Delta table."""
 
 import logging
 from typing import Optional
 
-from .config import app_config, get_workspace_client
+from .config import get_workspace_client, app_config
 from .warehouse import resolve_warehouse_id
-from .sql_utils import escape_comment
+from .sql_utils import quote_identifier
 
 logger = logging.getLogger(__name__)
 
 
+def _audit_table_quoted() -> str:
+    """Return the backtick-quoted audit table path from config."""
+    return quote_identifier(app_config.audit_table)
+
+
 def ensure_audit_table() -> bool:
-    """Create the centralized audit table if it doesn't exist."""
+    """Create the audit table if it doesn't exist."""
     from databricks.sdk.service.sql import StatementState
     w = get_workspace_client()
     wh_id = resolve_warehouse_id()
-    table_path = app_config.audit_table
 
     sql = f"""
-    CREATE TABLE IF NOT EXISTS {table_path} (
+    CREATE TABLE IF NOT EXISTS {_audit_table_quoted()} (
         full_table_name STRING,
         item_type STRING COMMENT 'TABLE or COLUMN',
         item_name STRING,
@@ -48,32 +52,31 @@ def log_action(
     action: str,
     applied_by: str = "app_user",
 ) -> bool:
-    """Log a single description action to the centralized audit table."""
-    from databricks.sdk.service.sql import StatementState
+    """Log a single description action to the audit table."""
+    from databricks.sdk.service.sql import StatementState, StatementParameterListItem
     w = get_workspace_client()
     wh_id = resolve_warehouse_id()
-    table_path = app_config.audit_table
-
-    esc = escape_comment
 
     sql = f"""
-    INSERT INTO {table_path}
-    VALUES (
-        '{esc(full_table_name)}',
-        '{esc(item_type)}',
-        '{esc(item_name)}',
-        '{esc(previous_description)}',
-        '{esc(ai_suggested_description)}',
-        '{esc(final_description)}',
-        '{esc(action)}',
-        '{esc(applied_by)}',
-        current_timestamp()
-    )
+    INSERT INTO {_audit_table_quoted()}
+    VALUES (:full_table_name, :item_type, :item_name, :previous,
+            :ai_suggested, :final, :action, :applied_by, current_timestamp())
     """
+
+    params = [
+        StatementParameterListItem(name="full_table_name", value=full_table_name),
+        StatementParameterListItem(name="item_type", value=item_type),
+        StatementParameterListItem(name="item_name", value=item_name),
+        StatementParameterListItem(name="previous", value=previous_description),
+        StatementParameterListItem(name="ai_suggested", value=ai_suggested_description),
+        StatementParameterListItem(name="final", value=final_description),
+        StatementParameterListItem(name="action", value=action),
+        StatementParameterListItem(name="applied_by", value=applied_by),
+    ]
 
     try:
         resp = w.statement_execution.execute_statement(
-            warehouse_id=wh_id, statement=sql, wait_timeout="50s"
+            warehouse_id=wh_id, statement=sql, parameters=params, wait_timeout="50s"
         )
         return resp.status and resp.status.state == StatementState.SUCCEEDED
     except Exception as e:
@@ -104,30 +107,30 @@ def log_batch(
     return success_count
 
 
-def get_audit_log(
-    full_table_name: Optional[str] = None,
-    limit: int = 50,
-) -> list[dict]:
-    """Retrieve recent audit log entries from the centralized audit table."""
-    from databricks.sdk.service.sql import StatementState
+def get_audit_log(full_table_name: Optional[str] = None, limit: int = 50) -> list[dict]:
+    """Retrieve recent audit log entries."""
+    from databricks.sdk.service.sql import StatementState, StatementParameterListItem
     w = get_workspace_client()
     wh_id = resolve_warehouse_id()
-    table_path = app_config.audit_table
-
-    where = ""
-    if full_table_name:
-        where = f"WHERE full_table_name = '{escape_comment(full_table_name)}'"
 
     sql = f"""
-    SELECT * FROM {table_path}
-    {where}
+    SELECT * FROM {_audit_table_quoted()}
+    """
+
+    if full_table_name:
+        sql += " WHERE full_table_name = :table_filter"
+        params = [StatementParameterListItem(name="table_filter", value=full_table_name)]
+    else:
+        params = None
+
+    sql += f"""
     ORDER BY applied_at DESC
     LIMIT {limit}
     """
 
     try:
         resp = w.statement_execution.execute_statement(
-            warehouse_id=wh_id, statement=sql, wait_timeout="50s"
+            warehouse_id=wh_id, statement=sql, parameters=params, wait_timeout="50s"
         )
         if not resp.result or not resp.result.data_array:
             return []
