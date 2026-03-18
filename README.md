@@ -72,7 +72,30 @@ databricks auth login --host https://<your-workspace>.azuredatabricks.net --prof
 databricks auth profiles | grep <your-profile>
 ```
 
-### Step 3: Validate and Deploy the Bundle
+### Step 3: (Optional) Configure a Specific Service Principal
+
+By default, Databricks automatically creates a dedicated Service Principal for the app on first deploy (e.g. `app-xxxxx uc-ai-descriptions`). If you want the app to run as an **existing SP** instead (e.g. one with pre-granted UC permissions), uncomment the `run_as` block in `databricks.yml` and set the SP's application ID:
+
+```yaml
+# In databricks.yml — under resources.apps.uc-ai-descriptions:
+run_as:
+  service_principal_name: <sp-application-id>   # UUID of the existing SP
+```
+
+Or pass it as a variable at deploy time:
+```bash
+databricks bundle deploy --profile <your-profile> \
+  --var="service_principal_id=<sp-application-id>"
+```
+
+**When to use each option:**
+
+| Option | When to use |
+|--------|-------------|
+| Auto-generated SP (default) | New deployments — Databricks manages the SP lifecycle |
+| Existing SP | You have an SP already granted UC permissions across catalogs |
+
+### Step 4: Validate and Deploy the Bundle
 
 ```bash
 # Validate the bundle configuration
@@ -87,7 +110,7 @@ databricks apps deploy uc-ai-descriptions \
   -p <your-profile>
 ```
 
-### Step 4: Attach Resources
+### Step 5: Attach Resources
 
 Add the SQL warehouse and serving endpoint as app resources:
 ```bash
@@ -99,7 +122,7 @@ databricks api patch /api/2.0/apps/uc-ai-descriptions --profile <your-profile> -
 }'
 ```
 
-### Step 5: Grant Service Principal Permissions
+### Step 6: Grant Service Principal Permissions
 
 Find the SP application ID:
 ```bash
@@ -121,7 +144,7 @@ GRANT CREATE TABLE ON SCHEMA governance.ai_descriptions TO `<sp-id>`;
 GRANT MODIFY ON SCHEMA governance.ai_descriptions TO `<sp-id>`;
 ```
 
-### Step 6: Redeploy and Verify
+### Step 7: Redeploy and Verify
 
 ```bash
 # Redeploy to pick up resource permissions
@@ -233,6 +256,7 @@ Download a self-contained Python notebook that can be scheduled as a Databricks 
 | `warehouse_id` | `""` (auto-detect) | SQL warehouse ID; empty = auto-select running serverless warehouse |
 | `serving_endpoint` | `databricks-claude-sonnet-4-6` | Foundation Model API endpoint name |
 | `app_title` | `Unity Catalog AI Descriptions` | Display title in the app header |
+| `service_principal_id` | `""` (auto-generate) | SP application ID (UUID) to run the app as; empty = Databricks creates a dedicated SP automatically |
 
 Override per target:
 ```yaml
