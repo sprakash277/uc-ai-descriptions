@@ -713,6 +713,7 @@ function renderSuggestions() {
         <button class="btn btn-sm btn-success" onclick="setStatus('__table__', 'approved')">&#10003;</button>
         <button class="btn btn-sm btn-outline" onclick="setStatus('__table__', 'rejected')">&#10007;</button>
         <button class="btn btn-sm btn-outline" onclick="resetSuggestion('__table__')">&#8634;</button>
+        <button class="btn btn-sm btn-outline" id="regen-btn-__table__" onclick="regenerateSingleBrowse('__table__')" title="Regenerate">&#8635; Regen</button>
         <span class="status-label ${ts.status !== 'pending' ? 'status-' + ts.status : ''}" id="status-__table__">${ts.status !== 'pending' ? ts.status.toUpperCase() : ''}</span>
       </div></div>`;
   }
@@ -728,6 +729,7 @@ function renderSuggestions() {
         <button class="btn btn-sm btn-success" onclick="setStatus('${colName}', 'approved')">&#10003;</button>
         <button class="btn btn-sm btn-outline" onclick="setStatus('${colName}', 'rejected')">&#10007;</button>
         <button class="btn btn-sm btn-outline" onclick="resetSuggestion('${colName}')">&#8634;</button>
+        <button class="btn btn-sm btn-outline" id="regen-btn-${colName}" onclick="regenerateSingleBrowse('${colName}')" title="Regenerate">&#8635; Regen</button>
         <span class="status-label ${s.status !== 'pending' ? 'status-' + s.status : ''}" id="status-${colName}">${s.status !== 'pending' ? s.status.toUpperCase() : ''}</span>
       </div></div>`;
   }
@@ -886,15 +888,19 @@ async function runBatchGenerate() {
           <span id="batch-card-hint-${idx}" style="font-size:12px; color:var(--text-dim);">Click to expand</span>
         </div>
         <div id="batch-body-${idx}" class="batch-table-body" style="display:none;">
-          <div style="margin-bottom:8px;"><strong>Table:</strong> ${r.suggestions.table_description || '(none)'}</div>
+          <div style="margin-bottom:8px; display:flex; align-items:center; gap:8px;">
+            <span><strong>Table:</strong> <span id="batch-table-desc-${idx}">${r.suggestions.table_description || '(none)'}</span></span>
+            <button class="btn btn-sm btn-outline" onclick="regenerateBatchTable('${r.full_name}', ${idx}, this)" title="Regenerate table description" style="font-size:11px; padding:2px 6px;">&#8635;</button>
+          </div>
           <table style="width:100%; font-size:12px; border-collapse:collapse;">
             <tr style="border-bottom:1px solid var(--border);"><th style="padding:4px;">Column</th><th style="padding:4px;">AI Description</th><th style="padding:4px;">Action</th></tr>
             ${colEntries.map(([col, desc], colIdx) => `
               <tr style="border-bottom:1px solid var(--border);">
                 <td style="padding:4px; font-family:monospace;">${col}</td>
-                <td style="padding:4px;">${desc}</td>
-                <td style="padding:4px;">
+                <td style="padding:4px;" id="batch-col-desc-${idx}-${colIdx}">${desc}</td>
+                <td style="padding:4px; white-space:nowrap;">
                   <button id="batch-col-btn-${idx}-${colIdx}" class="btn btn-sm btn-success" onclick="batchApplySingle('${r.full_name}', '${col}', ${idx}, this)" data-desc="${(desc || '').replace(/"/g, '&quot;')}">Apply</button>
+                  <button class="btn btn-sm btn-outline" id="batch-col-regen-${idx}-${colIdx}" onclick="regenerateBatchCol('${r.full_name}', '${col}', ${idx}, ${colIdx}, this)" title="Regenerate" style="font-size:11px; padding:2px 6px;">&#8635;</button>
                 </td>
               </tr>
             `).join('')}
@@ -1053,6 +1059,72 @@ async function batchApplySingle(fullName, colName, idx, btn) {
     btn.disabled = false;
     btn.textContent = 'Apply';
   }
+}
+
+// ── Per-item Regeneration ───────────────────────────────────
+
+async function regenerateSingleBrowse(key) {
+  const btn = document.getElementById(`regen-btn-${key}`);
+  const ta = document.getElementById(`text-${key}`);
+  if (btn) { btn.disabled = true; btn.textContent = '...'; }
+  try {
+    const itemName = key === '__table__' ? null : key;
+    const data = await apiFetch(`${API}/generate/item`, {
+      method: 'POST',
+      body: JSON.stringify({ full_name: currentTable.full_name, item_name: itemName, rules_override: sessionRules }),
+    });
+    suggestions[key].original = data.description;
+    suggestions[key].current = data.description;
+    suggestions[key].status = 'pending';
+    renderTableView();
+  } catch (e) {
+    showToast(`Regeneration failed: ${e.message}`, true);
+    if (btn) { btn.disabled = false; btn.textContent = '↺ Regen'; }
+  }
+}
+
+async function regenerateBatchCol(fullName, colName, idx, colIdx, btn) {
+  btn.disabled = true;
+  btn.textContent = '...';
+  try {
+    const data = await apiFetch(`${API}/generate/item`, {
+      method: 'POST',
+      body: JSON.stringify({ full_name: fullName, item_name: colName, rules_override: sessionRules }),
+    });
+    const newDesc = data.description;
+    batchResults[idx].suggestions.column_descriptions[colName] = newDesc;
+    const cell = document.getElementById(`batch-col-desc-${idx}-${colIdx}`);
+    if (cell) cell.textContent = newDesc;
+    const applyBtn = document.getElementById(`batch-col-btn-${idx}-${colIdx}`);
+    if (applyBtn) {
+      applyBtn.setAttribute('data-desc', newDesc);
+      applyBtn.disabled = false;
+      applyBtn.textContent = 'Apply';
+      applyBtn.style.opacity = '';
+    }
+  } catch (e) {
+    showToast(`Regeneration failed: ${e.message}`, true);
+  }
+  btn.disabled = false;
+  btn.textContent = '↺';
+}
+
+async function regenerateBatchTable(fullName, idx, btn) {
+  btn.disabled = true;
+  btn.textContent = '...';
+  try {
+    const data = await apiFetch(`${API}/generate/item`, {
+      method: 'POST',
+      body: JSON.stringify({ full_name: fullName, item_name: null, rules_override: sessionRules }),
+    });
+    batchResults[idx].suggestions.table_description = data.description;
+    const el = document.getElementById(`batch-table-desc-${idx}`);
+    if (el) el.textContent = data.description;
+  } catch (e) {
+    showToast(`Regeneration failed: ${e.message}`, true);
+  }
+  btn.disabled = false;
+  btn.textContent = '↺';
 }
 
 // ── Custom Rules ───────────────────────────────────────────
