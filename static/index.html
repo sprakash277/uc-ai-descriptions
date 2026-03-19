@@ -607,6 +607,10 @@ function renderSuggestions() {
   const colKeys = Object.keys(suggestions).filter(k => k !== '__table__');
   const totalCount = Object.keys(suggestions).length;
 
+  // TODO(frontend): Approve All / Reject All buttons are at the top-right of this section,
+  // but Regenerate and Apply to Metastore are pinned to the bottom (apply-bar).
+  // These bulk actions should all live in the same place — move Approve All / Reject All
+  // down into the apply-bar alongside Regenerate and Apply to Metastore.
   html += `<div class="section"><div class="section-title" style="justify-content:space-between;">
     <span>&#9889; AI-Suggested Descriptions (${totalCount})</span>
     <span><button class="btn btn-sm btn-success" onclick="approveAll()">&#10003; Approve All</button>
