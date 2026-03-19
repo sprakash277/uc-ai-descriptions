@@ -342,24 +342,31 @@
   <div id="session-rules-rules" class="session-rules-bar"></div>
   <div class="full-panel">
     <div class="section">
-      <div class="section-title">&#128737; Responsible AI Rules</div>
-      <p style="color:var(--text-dim); font-size:13px; margin-bottom:16px;">
-        These rules are injected into the AI system prompt before every generation request.
-        They are configured in <code style="background:var(--surface2); padding:2px 6px; border-radius:4px; font-size:12px;">config.yaml</code> and apply to all generations (single table and batch).
-      </p>
-      <textarea class="rules-textarea" id="custom-rules" readonly style="background:var(--bg); cursor:default; opacity:0.85;" placeholder="(No rules configured. Add rules to config.yaml)"></textarea>
-      <div style="margin-top:12px; display:flex; gap:12px; align-items:center;">
-        <span style="color:var(--text-dim); font-size:12px;">To modify rules, edit <code style="background:var(--surface2); padding:2px 6px; border-radius:4px; font-size:11px;">config.yaml</code> and redeploy.</span>
+      <div class="section-title" style="justify-content:space-between;">
+        <span>&#128737; Currently Effective Rules</span>
+        <span id="rules-effective-badge"></span>
       </div>
+      <p id="rules-effective-desc" style="color:var(--text-dim); font-size:13px; margin-bottom:12px;"></p>
+      <textarea class="rules-textarea" id="custom-rules" readonly style="background:var(--bg); cursor:default; opacity:0.85;" placeholder="(No rules configured)"></textarea>
     </div>
+
+    <div class="section" id="rules-org-section" style="display:none;">
+      <div class="section-title" style="color:var(--text-dim);">
+        &#128196; System Rules
+        <span style="font-size:12px; font-weight:normal; margin-left:6px;">from config.yaml — not currently active</span>
+      </div>
+      <textarea class="rules-textarea" id="org-rules-display" readonly
+        style="background:var(--bg); cursor:default; opacity:0.5; height:120px;"></textarea>
+    </div>
+
     <div class="section">
       <div class="section-title">&#128161; How Rules Are Applied</div>
       <ul style="color:var(--text-dim); font-size:13px; padding-left:20px;">
         <li>Rules are injected into the AI system prompt before every generation request</li>
         <li>They apply to both single-table and batch schema generation</li>
-        <li>Rules are version-controlled in <code style="background:var(--surface2); padding:2px 6px; border-radius:4px; font-size:12px;">config.yaml</code></li>
-        <li>Changes require a redeploy to take effect</li>
-        <li>For automated notebooks, export a notebook — rules are embedded in the code</li>
+        <li>Session overrides (above) apply only for your current browser session and are not saved</li>
+        <li>System rules are version-controlled in <code style="background:var(--surface2); padding:2px 6px; border-radius:4px; font-size:12px;">config.yaml</code> — changes require a redeploy</li>
+        <li>For automated notebooks, export a notebook — rules are embedded at export time</li>
       </ul>
     </div>
   </div>
@@ -496,6 +503,7 @@ function applySessionRules(tabId) {
   sessionRules = text || null;
   sessionRulesOpen = false;
   for (const t of ['browse', 'batch', 'rules']) renderSessionRulesPanel(t);
+  renderRulesTabContent();
   showToast(sessionRules ? 'Custom rules active for this session' : 'Reverted to org defaults');
 }
 
@@ -504,6 +512,7 @@ function clearSessionRules(tabId) {
   const ta = document.getElementById(`session-rules-text-${tabId}`);
   if (ta) ta.value = orgRules;
   for (const t of ['browse', 'batch', 'rules']) renderSessionRulesPanel(t);
+  renderRulesTabContent();
   showToast('Reverted to org defaults');
 }
 
@@ -1050,8 +1059,34 @@ async function batchApplySingle(fullName, colName, idx, btn) {
 async function loadRules() {
   try {
     const data = await apiFetch(`${API}/rules`);
-    document.getElementById('custom-rules').value = data.rules || '';
+    orgRules = data.rules || '';
   } catch (e) {}
+  renderRulesTabContent();
+}
+
+function renderRulesTabContent() {
+  const effectiveTa = document.getElementById('custom-rules');
+  const badge = document.getElementById('rules-effective-badge');
+  const desc = document.getElementById('rules-effective-desc');
+  const orgSection = document.getElementById('rules-org-section');
+  const orgTa = document.getElementById('org-rules-display');
+  if (!effectiveTa) return;  // tab not in DOM yet
+
+  const isCustom = sessionRules !== null;
+  effectiveTa.value = isCustom ? sessionRules : orgRules;
+
+  if (isCustom) {
+    badge.textContent = 'Session override active';
+    badge.style.cssText = 'font-size:11px; font-weight:600; padding:2px 8px; border:1px solid var(--orange); border-radius:3px; color:var(--orange);';
+    desc.textContent = 'Your session override rules are in effect — active for this browser session only, not saved. The system defaults are shown below for reference.';
+    orgSection.style.display = '';
+    orgTa.value = orgRules;
+  } else {
+    badge.textContent = 'System default (config.yaml)';
+    badge.style.cssText = 'font-size:11px; color:var(--text-dim);';
+    desc.textContent = 'These rules are injected into the AI system prompt before every generation request. They apply to all users and all generation modes.';
+    orgSection.style.display = 'none';
+  }
 }
 
 
