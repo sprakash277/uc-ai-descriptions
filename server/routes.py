@@ -79,6 +79,31 @@ async def generate_descriptions(req: GenerateRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ── AI Generation (single item — table or one column) ───────────────────
+
+class GenerateItemRequest(BaseModel):
+    full_name: str
+    item_name: Optional[str] = None  # None = table description; column name = column description
+    model: Optional[str] = None
+    rules_override: Optional[str] = None
+
+
+@router.post("/generate/item")
+async def generate_item_description(req: GenerateItemRequest):
+    """Re-generate AI description for a single table or column (using full table context)."""
+    try:
+        table_info = catalog.get_table_details(req.full_name)
+        suggestions = ai_gen.generate_descriptions(table_info, model=req.model, rules_override=req.rules_override)
+        if req.item_name is None:
+            description = suggestions["table_description"]
+        else:
+            description = suggestions["column_descriptions"].get(req.item_name, "")
+        return {"status": "success", "description": description}
+    except Exception as e:
+        logger.error("Generate item failed: %s", traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ── Batch Generation (entire schema) ────────────────────────────────────
 
 class BatchGenerateRequest(BaseModel):
