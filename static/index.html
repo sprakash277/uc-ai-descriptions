@@ -677,8 +677,8 @@ function markEdited(key) {
 }
 
 function resetSuggestion(key) { suggestions[key].current = suggestions[key].original; suggestions[key].status = 'pending'; renderTableView(); }
-function approveAll() { for (const k of Object.keys(suggestions)) { if (k === '__table__') continue; const ta = document.getElementById(`text-${k}`); if (ta) suggestions[k].current = ta.value; if (suggestions[k].status !== 'rejected') suggestions[k].status = 'approved'; } renderTableView(); }
-function rejectAll() { for (const k of Object.keys(suggestions)) { if (k === '__table__') continue; suggestions[k].status = 'rejected'; } renderTableView(); }
+function approveAll() { for (const k of Object.keys(suggestions)) { const ta = document.getElementById(`text-${k}`); if (ta) suggestions[k].current = ta.value; if (suggestions[k].status !== 'rejected') suggestions[k].status = 'approved'; } renderTableView(); }
+function rejectAll() { for (const k of Object.keys(suggestions)) { suggestions[k].status = 'rejected'; } renderTableView(); }
 
 async function applyApproved() {
   const btn = document.getElementById('apply-btn');
