@@ -1,9 +1,12 @@
 """UC AI Descriptions — Databricks App entry point."""
 
+import logging
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 import os
+
+logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
 from server.config import app_config
 
