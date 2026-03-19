@@ -21,10 +21,16 @@ Rules:
 - Do not include the column name or type in the description — the reader already sees those.
 - Return valid JSON only, no markdown fences."""
 
-def _build_system_prompt() -> str:
-    """Build system prompt including any custom Responsible AI rules."""
+def _build_system_prompt(rules_override: str | None = None) -> str:
+    """Build system prompt including Responsible AI rules.
+
+    Args:
+        rules_override: If provided, replaces the org rules from config for this
+                        generation only (per-session override). Pass None to use
+                        the org rules from config.yaml.
+    """
     prompt = DEFAULT_SYSTEM_PROMPT
-    rules = app_config.responsible_ai_rules
+    rules = rules_override if rules_override is not None else app_config.responsible_ai_rules
     if rules:
         prompt += f"\n\nAdditional organizational rules:\n{rules}"
     return prompt
@@ -39,6 +45,7 @@ def _get_client() -> OpenAI:
 def generate_descriptions(
     table_info: dict,
     model: str | None = None,
+    rules_override: str | None = None,
 ) -> dict:
     """Generate AI descriptions for a table and all its columns.
 
@@ -82,7 +89,7 @@ Return JSON in this exact format:
     response = client.chat.completions.create(
         model=model,
         messages=[
-            {"role": "system", "content": _build_system_prompt()},
+            {"role": "system", "content": _build_system_prompt(rules_override=rules_override)},
             {"role": "user", "content": user_prompt},
         ],
         max_tokens=4096,

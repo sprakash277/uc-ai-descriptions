@@ -58,6 +58,7 @@ async def get_table_details(full_name: str):
 class GenerateRequest(BaseModel):
     full_name: str
     model: Optional[str] = None
+    rules_override: Optional[str] = None  # Per-session rules; None = use org rules from config.yaml
 
 
 @router.post("/generate")
@@ -65,7 +66,7 @@ async def generate_descriptions(req: GenerateRequest):
     """Generate AI descriptions for a table and its columns."""
     try:
         table_info = catalog.get_table_details(req.full_name)
-        suggestions = ai_gen.generate_descriptions(table_info, model=req.model)
+        suggestions = ai_gen.generate_descriptions(table_info, model=req.model, rules_override=req.rules_override)
         return {
             "status": "success",
             "table_full_name": req.full_name,
@@ -84,6 +85,7 @@ class BatchGenerateRequest(BaseModel):
     catalog_name: str
     schema_name: str
     model: Optional[str] = None
+    rules_override: Optional[str] = None  # Per-session rules; None = use org rules from config.yaml
 
 
 @router.post("/generate/batch")
@@ -100,7 +102,7 @@ async def batch_generate_descriptions(req: BatchGenerateRequest):
                 continue
             try:
                 table_info = catalog.get_table_details(t["full_name"])
-                suggestions = ai_gen.generate_descriptions(table_info, model=req.model)
+                suggestions = ai_gen.generate_descriptions(table_info, model=req.model, rules_override=req.rules_override)
                 results.append({
                     "full_name": t["full_name"],
                     "table_name": t["name"],
