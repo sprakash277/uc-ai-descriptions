@@ -255,6 +255,15 @@
 
   .progress-bar { height: 4px; background: var(--border); border-radius: 2px; margin: 16px 0; }
   .progress-bar-fill { height: 100%; background: var(--accent); border-radius: 2px; transition: width 0.3s; }
+
+  .session-rules-bar {
+    padding: 8px 24px; background: var(--surface); border-bottom: 1px solid var(--border);
+    font-size: 13px;
+  }
+  .session-rules-badge {
+    font-size: 11px; font-weight: 600; padding: 1px 6px; border-radius: 3px;
+    border: 1px solid var(--orange); color: var(--orange); margin-left: 8px;
+  }
 </style>
 </head>
 <body>
@@ -274,6 +283,7 @@
 
 <!-- ═══ TAB: Browse & Generate ═══════════════════════════════════════ -->
 <div id="tab-browse" class="tab-content">
+  <div id="session-rules-browse" class="session-rules-bar"></div>
   <div class="layout">
     <div class="sidebar">
       <h2>Catalog Browser</h2>
@@ -316,6 +326,8 @@
         </button>
       </div>
     </div>
+
+    <div id="session-rules-batch" style="margin: 16px 0; padding: 8px 0; border-top: 1px solid var(--border);"></div>
 
     <div id="batch-progress" style="display:none;">
       <div class="generating-banner"><div class="spinner"></div> <span id="batch-status-text">Generating descriptions...</span></div>
@@ -430,6 +442,73 @@ const API = '/api';
 let currentTable = null;
 let suggestions = {};
 let batchResults = [];
+
+// ── Session Rules Override ──────────────────────────────────
+let sessionRules = null;      // null = use org rules; string = active override
+let sessionRulesOpen = false; // whether the panel is expanded
+let orgRules = '';            // org rules loaded from /api/rules (cached)
+
+async function ensureOrgRules() {
+  if (!orgRules) {
+    try { orgRules = (await apiFetch(`${API}/rules`)).rules || ''; } catch (e) {}
+  }
+}
+
+function renderSessionRulesPanel(tabId) {
+  const el = document.getElementById(`session-rules-${tabId}`);
+  if (!el) return;
+  const isCustom = sessionRules !== null;
+  const badge = isCustom
+    ? '<span class="session-rules-badge">CUSTOM</span>'
+    : '<span style="font-size:11px; color:var(--text-dim); margin-left:8px;">using org defaults</span>';
+  const chevron = sessionRulesOpen ? '▲' : '▼';
+
+  let html = `<div style="display:flex; justify-content:space-between; align-items:center; cursor:pointer; user-select:none;"
+      onclick="toggleSessionRules('${tabId}')">
+    <div>&#9881; <strong style="font-size:13px;">Session Rules Override</strong>${badge}</div>
+    <span style="font-size:11px; color:var(--text-dim);">${chevron} ${sessionRulesOpen ? 'collapse' : 'expand'}</span>
+  </div>`;
+
+  if (sessionRulesOpen) {
+    html += `<div style="margin-top:10px; padding:12px; background:var(--bg); border:1px solid var(--border); border-radius:var(--radius);">
+      <div style="font-size:11px; color:var(--text-dim); margin-bottom:8px;">
+        Applies to generations in this browser session only — not saved. Edit to override the org rules for your current work.
+      </div>
+      <textarea id="session-rules-text-${tabId}" style="width:100%; height:110px; padding:8px; background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); color:var(--text); font-family:monospace; font-size:12px; resize:vertical; box-sizing:border-box;">${sessionRules !== null ? sessionRules : orgRules}</textarea>
+      <div style="margin-top:8px; display:flex; gap:8px;">
+        <button class="btn btn-sm btn-success" onclick="applySessionRules('${tabId}')">&#10003; Use for this session</button>
+        <button class="btn btn-sm" onclick="clearSessionRules('${tabId}')">&#8634; Reset to org defaults</button>
+      </div>
+    </div>`;
+  }
+  el.innerHTML = html;
+}
+
+async function toggleSessionRules(tabId) {
+  sessionRulesOpen = !sessionRulesOpen;
+  if (sessionRulesOpen) await ensureOrgRules();
+  renderSessionRulesPanel(tabId);
+}
+
+function applySessionRules(tabId) {
+  const ta = document.getElementById(`session-rules-text-${tabId}`);
+  const text = ta ? ta.value.trim() : '';
+  sessionRules = text || null;
+  sessionRulesOpen = false;
+  renderSessionRulesPanel(tabId);
+  // Mirror state to the other tab's panel
+  renderSessionRulesPanel(tabId === 'browse' ? 'batch' : 'browse');
+  showToast(sessionRules ? 'Custom rules active for this session' : 'Reverted to org defaults');
+}
+
+function clearSessionRules(tabId) {
+  sessionRules = null;
+  const ta = document.getElementById(`session-rules-text-${tabId}`);
+  if (ta) ta.value = orgRules;
+  renderSessionRulesPanel(tabId);
+  renderSessionRulesPanel(tabId === 'browse' ? 'batch' : 'browse');
+  showToast('Reverted to org defaults');
+}
 
 // ── Tab Switching ──────────────────────────────────────────
 function switchTab(tab) {
@@ -584,7 +663,7 @@ async function generateDescriptions() {
   btn.disabled = true;
   btn.innerHTML = '<div class="spinner"></div> Generating with Claude...';
   try {
-    const data = await apiFetch(`${API}/generate`, { method: 'POST', body: JSON.stringify({ full_name: currentTable.full_name }) });
+    const data = await apiFetch(`${API}/generate`, { method: 'POST', body: JSON.stringify({ full_name: currentTable.full_name, rules_override: sessionRules }) });
     suggestions = {};
     const s = data.suggestions;
     suggestions['__table__'] = { original: s.table_description, current: s.table_description, status: 'pending', currentComment: currentTable.comment || '' };
@@ -777,7 +856,7 @@ async function runBatchGenerate() {
   try {
     const data = await apiFetch(`${API}/generate/batch`, {
       method: 'POST',
-      body: JSON.stringify({ catalog_name: cat, schema_name: schema }),
+      body: JSON.stringify({ catalog_name: cat, schema_name: schema, rules_override: sessionRules }),
     });
 
     document.getElementById('batch-progress').style.display = 'none';
@@ -1050,6 +1129,8 @@ function showToast(msg, isError = false) {
 
 // ── Init ───────────────────────────────────────────────────
 loadCatalogs();
+renderSessionRulesPanel('browse');
+renderSessionRulesPanel('batch');
 </script>
 </body>
 </html>
