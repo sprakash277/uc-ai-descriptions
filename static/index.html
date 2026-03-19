@@ -798,7 +798,7 @@ async function runBatchGenerate() {
                 <td style="padding:4px; font-family:monospace;">${col}</td>
                 <td style="padding:4px;">${desc}</td>
                 <td style="padding:4px;">
-                  <button class="btn btn-sm btn-success" onclick="batchApplySingle('${r.full_name}', '${col}', this)" data-desc="${desc.replace(/"/g, '&quot;')}">Apply</button>
+                  <button class="btn btn-sm btn-success" onclick="batchApplySingle('${r.full_name}', '${col}', this)" data-desc="${(desc || '').replace(/"/g, '&quot;')}">Apply</button>
                 </td>
               </tr>
             `).join('')}
