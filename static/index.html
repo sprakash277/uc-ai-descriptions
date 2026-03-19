@@ -301,6 +301,7 @@
 
 <!-- ═══ TAB: Batch Schema ════════════════════════════════════════════ -->
 <div id="tab-batch" class="tab-content" style="display:none;">
+  <div id="session-rules-batch" class="session-rules-bar"></div>
   <div class="full-panel">
     <div class="section">
       <div class="section-title">&#9889; Batch Generate Descriptions for Entire Schema</div>
@@ -327,8 +328,6 @@
       </div>
     </div>
 
-    <div id="session-rules-batch" style="margin: 16px 0; padding: 8px 0; border-top: 1px solid var(--border);"></div>
-
     <div id="batch-progress" style="display:none;">
       <div class="generating-banner"><div class="spinner"></div> <span id="batch-status-text">Generating descriptions...</span></div>
       <div class="progress-bar"><div class="progress-bar-fill" id="batch-progress-bar" style="width:0%"></div></div>
@@ -340,6 +339,7 @@
 
 <!-- ═══ TAB: Responsible AI Rules ════════════════════════════════════ -->
 <div id="tab-rules" class="tab-content" style="display:none;">
+  <div id="session-rules-rules" class="session-rules-bar"></div>
   <div class="full-panel">
     <div class="section">
       <div class="section-title">&#128737; Responsible AI Rules</div>
@@ -495,9 +495,7 @@ function applySessionRules(tabId) {
   const text = ta ? ta.value.trim() : '';
   sessionRules = text || null;
   sessionRulesOpen = false;
-  renderSessionRulesPanel(tabId);
-  // Mirror state to the other tab's panel
-  renderSessionRulesPanel(tabId === 'browse' ? 'batch' : 'browse');
+  for (const t of ['browse', 'batch', 'rules']) renderSessionRulesPanel(t);
   showToast(sessionRules ? 'Custom rules active for this session' : 'Reverted to org defaults');
 }
 
@@ -505,8 +503,7 @@ function clearSessionRules(tabId) {
   sessionRules = null;
   const ta = document.getElementById(`session-rules-text-${tabId}`);
   if (ta) ta.value = orgRules;
-  renderSessionRulesPanel(tabId);
-  renderSessionRulesPanel(tabId === 'browse' ? 'batch' : 'browse');
+  for (const t of ['browse', 'batch', 'rules']) renderSessionRulesPanel(t);
   showToast('Reverted to org defaults');
 }
 
@@ -1131,6 +1128,7 @@ function showToast(msg, isError = false) {
 loadCatalogs();
 renderSessionRulesPanel('browse');
 renderSessionRulesPanel('batch');
+renderSessionRulesPanel('rules');
 </script>
 </body>
 </html>
