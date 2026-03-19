@@ -783,34 +783,39 @@ async function runBatchGenerate() {
     document.getElementById('batch-progress').style.display = 'none';
     batchResults = data.results;
 
-    let html = `<div style="margin-bottom:16px; font-size:14px;">
+    let html = `<div style="margin-bottom:12px; font-size:14px;">
       <strong>${data.tables_processed}</strong> tables processed
       ${data.tables_failed > 0 ? `, <span style="color:var(--red)">${data.tables_failed} failed</span>` : ''}
+    </div>
+    <div style="margin-bottom:16px; display:flex; gap:8px; align-items:center;">
+      <button class="btn btn-sm" onclick="expandAll()" style="font-size:12px;">&#8595; Expand All</button>
+      <button id="batch-apply-all-btn" class="btn btn-sm btn-success" onclick="applyAllTables()" style="font-size:12px;">&#10003; Apply All Tables</button>
     </div>`;
 
-    for (const r of data.results) {
+    for (const [idx, r] of data.results.entries()) {
       const colCount = Object.keys(r.suggestions.column_descriptions || {}).length;
-      html += `<div class="batch-table-card">
-        <div class="batch-table-header" onclick="this.nextElementSibling.style.display = this.nextElementSibling.style.display === 'none' ? 'block' : 'none'">
+      const colEntries = Object.entries(r.suggestions.column_descriptions || {});
+      html += `<div class="batch-table-card" id="batch-card-${idx}">
+        <div class="batch-table-header" onclick="toggleCard(${idx})">
           <span>&#128203; ${r.table_name} <span style="color:var(--text-dim); font-weight:400;">(${colCount} columns)</span></span>
-          <span style="font-size:12px; color:var(--text-dim);">Click to expand</span>
+          <span id="batch-card-hint-${idx}" style="font-size:12px; color:var(--text-dim);">Click to expand</span>
         </div>
-        <div class="batch-table-body" style="display:none;">
+        <div id="batch-body-${idx}" class="batch-table-body" style="display:none;">
           <div style="margin-bottom:8px;"><strong>Table:</strong> ${r.suggestions.table_description || '(none)'}</div>
           <table style="width:100%; font-size:12px; border-collapse:collapse;">
             <tr style="border-bottom:1px solid var(--border);"><th style="padding:4px;">Column</th><th style="padding:4px;">AI Description</th><th style="padding:4px;">Action</th></tr>
-            ${Object.entries(r.suggestions.column_descriptions || {}).map(([col, desc]) => `
+            ${colEntries.map(([col, desc], colIdx) => `
               <tr style="border-bottom:1px solid var(--border);">
                 <td style="padding:4px; font-family:monospace;">${col}</td>
                 <td style="padding:4px;">${desc}</td>
                 <td style="padding:4px;">
-                  <button class="btn btn-sm btn-success" onclick="batchApplySingle('${r.full_name}', '${col}', this)" data-desc="${(desc || '').replace(/"/g, '&quot;')}">Apply</button>
+                  <button id="batch-col-btn-${idx}-${colIdx}" class="btn btn-sm btn-success" onclick="batchApplySingle('${r.full_name}', '${col}', this)" data-desc="${(desc || '').replace(/"/g, '&quot;')}">Apply</button>
                 </td>
               </tr>
             `).join('')}
           </table>
           <div style="margin-top:12px;">
-            <button class="btn btn-sm btn-success" onclick="batchApplyTable('${r.full_name}', ${data.results.indexOf(r)}, this)">&#10003; Apply All for ${r.table_name}</button>
+            <button id="batch-apply-btn-${idx}" class="btn btn-sm btn-success" onclick="batchApplyTable('${r.full_name}', ${idx}, this)">&#10003; Apply All for ${r.table_name}</button>
           </div>
         </div>
       </div>`;
@@ -827,10 +832,52 @@ async function runBatchGenerate() {
   btn.innerHTML = '&#9889; Generate for All Tables';
 }
 
+function toggleCard(idx) {
+  const body = document.getElementById(`batch-body-${idx}`);
+  const hint = document.getElementById(`batch-card-hint-${idx}`);
+  const expanded = body.style.display !== 'none';
+  body.style.display = expanded ? 'none' : 'block';
+  hint.textContent = expanded ? 'Click to expand' : 'Click to collapse';
+}
+
+function expandAll() {
+  for (let i = 0; i < batchResults.length; i++) {
+    const body = document.getElementById(`batch-body-${i}`);
+    const hint = document.getElementById(`batch-card-hint-${i}`);
+    if (body) { body.style.display = 'block'; hint.textContent = 'Click to collapse'; }
+  }
+}
+
+async function applyAllTables() {
+  const allBtn = document.getElementById('batch-apply-all-btn');
+  allBtn.disabled = true;
+  allBtn.textContent = 'Applying...';
+  for (let i = 0; i < batchResults.length; i++) {
+    const r = batchResults[i];
+    const tableBtn = document.getElementById(`batch-apply-btn-${i}`);
+    if (tableBtn && !tableBtn.disabled) {
+      await batchApplyTable(r.full_name, i, tableBtn);
+    }
+  }
+  allBtn.textContent = '\u2713 All Applied';
+  allBtn.style.opacity = '0.6';
+}
+
 async function batchApplyTable(fullName, idx, btn) {
   const r = batchResults[idx];
   btn.disabled = true;
   btn.textContent = 'Applying...';
+
+  // Show applying state on all column buttons for this table
+  const colEntries = Object.entries(r.suggestions.column_descriptions || {});
+  for (let colIdx = 0; colIdx < colEntries.length; colIdx++) {
+    const colBtn = document.getElementById(`batch-col-btn-${idx}-${colIdx}`);
+    if (colBtn && !colBtn.disabled) {
+      colBtn.disabled = true;
+      colBtn.textContent = '...';
+    }
+  }
+
   try {
     // Filter out null/empty descriptions before sending
     const rawCols = r.suggestions.column_descriptions || {};
@@ -851,10 +898,25 @@ async function batchApplyTable(fullName, idx, btn) {
     showToast(`Applied ${ok} descriptions for ${r.table_name}${fail > 0 ? `, ${fail} failed` : ''}`, fail > 0);
     btn.textContent = '\u2713 Applied';
     btn.style.opacity = '0.6';
+
+    // Mark all column buttons as applied
+    for (let colIdx = 0; colIdx < colEntries.length; colIdx++) {
+      const colBtn = document.getElementById(`batch-col-btn-${idx}-${colIdx}`);
+      if (colBtn) { colBtn.textContent = 'Applied'; colBtn.style.opacity = '0.5'; }
+    }
   } catch (e) {
     showToast(`Failed: ${e.message}`, true);
     btn.disabled = false;
     btn.textContent = '\u2713 Apply All for ' + r.table_name;
+
+    // Re-enable column buttons on failure
+    for (let colIdx = 0; colIdx < colEntries.length; colIdx++) {
+      const colBtn = document.getElementById(`batch-col-btn-${idx}-${colIdx}`);
+      if (colBtn && colBtn.textContent === '...') {
+        colBtn.disabled = false;
+        colBtn.textContent = 'Apply';
+      }
+    }
   }
 }
 
