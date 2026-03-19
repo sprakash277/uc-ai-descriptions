@@ -614,7 +614,8 @@ function renderSuggestions() {
   html += `<div class="section"><div class="section-title" style="justify-content:space-between;">
     <span>&#9889; AI-Suggested Descriptions (${totalCount})</span>
     <span><button class="btn btn-sm btn-success" onclick="approveAll()">&#10003; Approve All</button>
-    <button class="btn btn-sm btn-outline" onclick="rejectAll()">&#10007; Reject All</button></span>
+    <button class="btn btn-sm btn-outline" onclick="rejectAll()">&#10007; Reject All</button>
+    <button class="btn btn-sm btn-outline" onclick="resetAll()">&#8634; Clear All</button></span>
   </div>`;
 
   if (ts) {
@@ -677,6 +678,7 @@ function markEdited(key) {
 }
 
 function resetSuggestion(key) { suggestions[key].current = suggestions[key].original; suggestions[key].status = 'pending'; renderTableView(); }
+function resetAll() { for (const k of Object.keys(suggestions)) { suggestions[k].current = suggestions[k].original; suggestions[k].status = 'pending'; } renderTableView(); }
 function approveAll() { for (const k of Object.keys(suggestions)) { const ta = document.getElementById(`text-${k}`); if (ta) suggestions[k].current = ta.value; if (suggestions[k].status !== 'rejected') suggestions[k].status = 'approved'; } renderTableView(); }
 function rejectAll() { for (const k of Object.keys(suggestions)) { suggestions[k].status = 'rejected'; } renderTableView(); }
 
