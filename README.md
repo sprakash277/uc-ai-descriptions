@@ -145,6 +145,32 @@ databricks apps deploy uc-ai-descriptions \
 databricks apps get uc-ai-descriptions -p <your-profile>
 ```
 
+### Startup Audit Validation
+
+Every time the app starts, it automatically validates and bootstraps the audit table configured in `config.yaml`. The startup check:
+
+1. **Validates** the `audit.table` setting is a valid `catalog.schema.table` name
+2. **Checks** the catalog is accessible to the service principal
+3. **Creates the schema** if it doesn't exist (requires `CREATE SCHEMA` privilege on the catalog)
+4. **Creates the audit table** if it doesn't exist (requires `CREATE TABLE` + `MODIFY` on the schema)
+
+**If audit setup fails**, the app continues running but audit logging will be disabled. Look for `ERROR server.audit:` lines in the app logs:
+
+```
+https://uc-ai-descriptions-<workspace-id>.azure.databricksapps.com/logz
+# or
+databricks apps logs uc-ai-descriptions --tail-lines 50 -p <your-profile>
+```
+
+Common error patterns and fixes:
+
+| Error | Fix |
+|-------|-----|
+| `cannot access catalog '<catalog>'` | `GRANT USE CATALOG ON CATALOG <catalog> TO '<sp-id>';` |
+| `schema '...' does not exist and could not be created` | `GRANT CREATE SCHEMA ON CATALOG <catalog> TO '<sp-id>';` |
+| `could not create table '...'` | `GRANT CREATE TABLE ON SCHEMA <schema> TO '<sp-id>'; GRANT MODIFY ON SCHEMA <schema> TO '<sp-id>';` |
+| `not a valid 3-part name` | Fix `audit.table` in `config.yaml` — must be `catalog.schema.table` |
+
 ---
 
 ## App UI Walkthrough

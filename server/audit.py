@@ -107,6 +107,95 @@ def log_batch(
     return success_count
 
 
+def validate_audit_setup() -> bool:
+    """Validate and bootstrap the audit table at app startup.
+
+    Checks that the configured catalog and schema are accessible, creates them
+    if possible, then ensures the audit table exists. Logs actionable ERROR
+    messages with recommended SQL grants when setup is incomplete.
+
+    Returns True if audit logging is fully operational, False if degraded.
+    """
+    table = app_config.audit_table
+    parts = table.split(".")
+    if len(parts) != 3:
+        logger.error(
+            "Audit table '%s' is not a valid 3-part name (catalog.schema.table). "
+            "Fix 'audit.table' in config.yaml and redeploy.",
+            table,
+        )
+        return False
+
+    catalog_name, schema_name, _ = parts
+    full_schema = f"{catalog_name}.{schema_name}"
+
+    w = get_workspace_client()
+
+    # 1. Verify catalog access
+    try:
+        w.catalogs.get(catalog_name)
+        logger.info("Audit: catalog '%s' is accessible.", catalog_name)
+    except Exception as e:
+        logger.error(
+            "Audit setup failed: cannot access catalog '%s' (%s). "
+            "Grant the app's service principal access:\n"
+            "  GRANT USE CATALOG ON CATALOG %s TO `<sp-application-id>`;\n"
+            "Find the SP ID with: databricks apps get uc-ai-descriptions | grep service_principal_client_id",
+            catalog_name, e, catalog_name,
+        )
+        return False
+
+    # 2. Verify or create schema
+    schema_exists = False
+    try:
+        w.schemas.get(full_schema)
+        schema_exists = True
+        logger.info("Audit: schema '%s' is accessible.", full_schema)
+    except Exception:
+        pass
+
+    if not schema_exists:
+        logger.info("Audit: schema '%s' not found — attempting to create.", full_schema)
+        try:
+            w.schemas.create(name=schema_name, catalog_name=catalog_name)
+            logger.info("Audit: schema '%s' created successfully.", full_schema)
+        except Exception as create_err:
+            logger.error(
+                "Audit setup failed: schema '%s' does not exist and could not be created (%s). "
+                "Either create it manually or grant CREATE SCHEMA to the service principal:\n"
+                "  GRANT USE CATALOG ON CATALOG %s TO `<sp-application-id>`;\n"
+                "  GRANT CREATE SCHEMA ON CATALOG %s TO `<sp-application-id>`;\n"
+                "Or create the schema manually: CREATE SCHEMA IF NOT EXISTS %s;",
+                full_schema, create_err, catalog_name, catalog_name, full_schema,
+            )
+            return False
+
+    # 3. Ensure audit table exists (CREATE IF NOT EXISTS)
+    try:
+        ok = ensure_audit_table()
+        if ok:
+            logger.info("Audit: table '%s' is ready.", table)
+            return True
+        else:
+            logger.error(
+                "Audit setup: table creation returned a non-success status for '%s'. "
+                "Ensure the service principal has CREATE TABLE and MODIFY on the schema:\n"
+                "  GRANT CREATE TABLE ON SCHEMA %s TO `<sp-application-id>`;\n"
+                "  GRANT MODIFY ON SCHEMA %s TO `<sp-application-id>`;",
+                table, full_schema, full_schema,
+            )
+            return False
+    except Exception as e:
+        logger.error(
+            "Audit setup failed: could not create table '%s' (%s). "
+            "Grant the service principal:\n"
+            "  GRANT CREATE TABLE ON SCHEMA %s TO `<sp-application-id>`;\n"
+            "  GRANT MODIFY ON SCHEMA %s TO `<sp-application-id>`;",
+            table, e, full_schema, full_schema,
+        )
+        return False
+
+
 def get_audit_log(full_table_name: Optional[str] = None, limit: int = 50) -> list[dict]:
     """Retrieve recent audit log entries."""
     from databricks.sdk.service.sql import StatementState, StatementParameterListItem
