@@ -557,10 +557,10 @@ function renderTableView() {
       </div>
       <button class="btn btn-primary" onclick="generateDescriptions()" id="generate-btn">&#9889; Generate AI Descriptions</button>
     </div>
-    <div class="section">
+    ${!hasSuggestions ? `<div class="section">
       <div class="section-title">&#128196; Table Description</div>
       ${t.comment ? `<div style="font-size:13px;">${t.comment}</div>` : `<div class="desc-current">(No description set)</div>`}
-    </div>`;
+    </div>` : ''}`;
 
   if (hasSuggestions) {
     html += renderSuggestions();
@@ -604,45 +604,45 @@ async function generateDescriptions() {
 function renderSuggestions() {
   let html = '';
   const ts = suggestions['__table__'];
+  const colKeys = Object.keys(suggestions).filter(k => k !== '__table__');
+  const totalCount = Object.keys(suggestions).length;
+
+  html += `<div class="section"><div class="section-title" style="justify-content:space-between;">
+    <span>&#9889; AI-Suggested Descriptions (${totalCount})</span>
+    <span><button class="btn btn-sm btn-success" onclick="approveAll()">&#10003; Approve All</button>
+    <button class="btn btn-sm btn-outline" onclick="rejectAll()">&#10007; Reject All</button></span>
+  </div>`;
+
   if (ts) {
-    html += `<div class="section"><div class="section-title">&#9889; AI-Suggested Table Description</div>
-      <div class="suggestion-row ${ts.status}" id="suggestion-__table__">
-        <div class="suggestion-label">Table</div>
-        <div class="suggestion-name">${currentTable.full_name}</div>
-        ${ts.currentComment ? `<div class="suggestion-current">Current: ${ts.currentComment}</div>` : `<div class="suggestion-current"><em>No current description</em></div>`}
-        <div class="suggestion-ai"><textarea id="text-__table__" onchange="markEdited('__table__')">${ts.current}</textarea></div>
-        <div class="suggestion-actions">
-          <button class="btn btn-sm btn-success" onclick="setStatus('__table__', 'approved')">&#10003; Approve</button>
-          <button class="btn btn-sm btn-outline" onclick="setStatus('__table__', 'rejected')">&#10007; Reject</button>
-          <button class="btn btn-sm btn-outline" onclick="resetSuggestion('__table__')">&#8634; Reset</button>
-          <span class="status-label ${ts.status !== 'pending' ? 'status-' + ts.status : ''}" id="status-__table__">${ts.status !== 'pending' ? ts.status.toUpperCase() : ''}</span>
-        </div>
+    html += `<div class="suggestion-row ${ts.status}" id="suggestion-__table__">
+      <div class="suggestion-label">Table</div>
+      <div class="suggestion-name">${currentTable.full_name}</div>
+      ${ts.currentComment ? `<div class="suggestion-current">Current: ${ts.currentComment}</div>` : `<div class="suggestion-current"><em>No current description</em></div>`}
+      <div class="suggestion-ai"><textarea id="text-__table__" onchange="markEdited('__table__')">${ts.current}</textarea></div>
+      <div class="suggestion-actions">
+        <button class="btn btn-sm btn-success" onclick="setStatus('__table__', 'approved')">&#10003;</button>
+        <button class="btn btn-sm btn-outline" onclick="setStatus('__table__', 'rejected')">&#10007;</button>
+        <button class="btn btn-sm btn-outline" onclick="resetSuggestion('__table__')">&#8634;</button>
+        <span class="status-label ${ts.status !== 'pending' ? 'status-' + ts.status : ''}" id="status-__table__">${ts.status !== 'pending' ? ts.status.toUpperCase() : ''}</span>
       </div></div>`;
   }
 
-  const colKeys = Object.keys(suggestions).filter(k => k !== '__table__');
-  if (colKeys.length > 0) {
-    html += `<div class="section"><div class="section-title" style="justify-content:space-between;">
-      <span>&#9889; AI-Suggested Column Descriptions (${colKeys.length})</span>
-      <span><button class="btn btn-sm btn-success" onclick="approveAll()">&#10003; Approve All</button>
-      <button class="btn btn-sm btn-outline" onclick="rejectAll()">&#10007; Reject All</button></span>
-    </div>`;
-    for (const colName of colKeys) {
-      const s = suggestions[colName];
-      html += `<div class="suggestion-row ${s.status}" id="suggestion-${colName}">
-        <div class="suggestion-label">Column</div>
-        <div class="suggestion-name">${colName}</div><div class="suggestion-type">${s.type}</div>
-        ${s.currentComment ? `<div class="suggestion-current">Current: ${s.currentComment}</div>` : `<div class="suggestion-current"><em>No current description</em></div>`}
-        <div class="suggestion-ai"><textarea id="text-${colName}" onchange="markEdited('${colName}')">${s.current}</textarea></div>
-        <div class="suggestion-actions">
-          <button class="btn btn-sm btn-success" onclick="setStatus('${colName}', 'approved')">&#10003;</button>
-          <button class="btn btn-sm btn-outline" onclick="setStatus('${colName}', 'rejected')">&#10007;</button>
-          <button class="btn btn-sm btn-outline" onclick="resetSuggestion('${colName}')">&#8634;</button>
-          <span class="status-label ${s.status !== 'pending' ? 'status-' + s.status : ''}" id="status-${colName}">${s.status !== 'pending' ? s.status.toUpperCase() : ''}</span>
-        </div></div>`;
-    }
-    html += '</div>';
+  for (const colName of colKeys) {
+    const s = suggestions[colName];
+    html += `<div class="suggestion-row ${s.status}" id="suggestion-${colName}">
+      <div class="suggestion-label">Column</div>
+      <div class="suggestion-name">${colName}</div><div class="suggestion-type">${s.type}</div>
+      ${s.currentComment ? `<div class="suggestion-current">Current: ${s.currentComment}</div>` : `<div class="suggestion-current"><em>No current description</em></div>`}
+      <div class="suggestion-ai"><textarea id="text-${colName}" onchange="markEdited('${colName}')">${s.current}</textarea></div>
+      <div class="suggestion-actions">
+        <button class="btn btn-sm btn-success" onclick="setStatus('${colName}', 'approved')">&#10003;</button>
+        <button class="btn btn-sm btn-outline" onclick="setStatus('${colName}', 'rejected')">&#10007;</button>
+        <button class="btn btn-sm btn-outline" onclick="resetSuggestion('${colName}')">&#8634;</button>
+        <span class="status-label ${s.status !== 'pending' ? 'status-' + s.status : ''}" id="status-${colName}">${s.status !== 'pending' ? s.status.toUpperCase() : ''}</span>
+      </div></div>`;
   }
+
+  html += '</div>';
 
   const approved = Object.values(suggestions).filter(s => s.status === 'approved' || s.status === 'edited').length;
   const rejected = Object.values(suggestions).filter(s => s.status === 'rejected').length;
