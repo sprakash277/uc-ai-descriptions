@@ -809,7 +809,7 @@ async function runBatchGenerate() {
                 <td style="padding:4px; font-family:monospace;">${col}</td>
                 <td style="padding:4px;">${desc}</td>
                 <td style="padding:4px;">
-                  <button id="batch-col-btn-${idx}-${colIdx}" class="btn btn-sm btn-success" onclick="batchApplySingle('${r.full_name}', '${col}', this)" data-desc="${(desc || '').replace(/"/g, '&quot;')}">Apply</button>
+                  <button id="batch-col-btn-${idx}-${colIdx}" class="btn btn-sm btn-success" onclick="batchApplySingle('${r.full_name}', '${col}', ${idx}, this)" data-desc="${(desc || '').replace(/"/g, '&quot;')}">Apply</button>
                 </td>
               </tr>
             `).join('')}
@@ -904,6 +904,7 @@ async function batchApplyTable(fullName, idx, btn) {
       const colBtn = document.getElementById(`batch-col-btn-${idx}-${colIdx}`);
       if (colBtn) { colBtn.textContent = 'Applied'; colBtn.style.opacity = '0.5'; }
     }
+    checkAllTablesApplied();
   } catch (e) {
     showToast(`Failed: ${e.message}`, true);
     btn.disabled = false;
@@ -920,7 +921,37 @@ async function batchApplyTable(fullName, idx, btn) {
   }
 }
 
-async function batchApplySingle(fullName, colName, btn) {
+function checkTableApplied(idx) {
+  const r = batchResults[idx];
+  const colCount = Object.keys(r.suggestions.column_descriptions || {}).length;
+  if (colCount === 0) return;
+  for (let colIdx = 0; colIdx < colCount; colIdx++) {
+    const colBtn = document.getElementById(`batch-col-btn-${idx}-${colIdx}`);
+    if (!colBtn || colBtn.textContent !== 'Applied') return;
+  }
+  // All column buttons are applied — mark the per-table button too
+  const tableBtn = document.getElementById(`batch-apply-btn-${idx}`);
+  if (tableBtn && !tableBtn.disabled) {
+    tableBtn.disabled = true;
+    tableBtn.textContent = '\u2713 Applied';
+    tableBtn.style.opacity = '0.6';
+    checkAllTablesApplied();
+  }
+}
+
+function checkAllTablesApplied() {
+  const allBtn = document.getElementById('batch-apply-all-btn');
+  if (!allBtn || allBtn.disabled) return;
+  for (let i = 0; i < batchResults.length; i++) {
+    const tableBtn = document.getElementById(`batch-apply-btn-${i}`);
+    if (!tableBtn || !tableBtn.disabled) return;
+  }
+  allBtn.disabled = true;
+  allBtn.textContent = '\u2713 All Applied';
+  allBtn.style.opacity = '0.6';
+}
+
+async function batchApplySingle(fullName, colName, idx, btn) {
   const desc = btn.getAttribute('data-desc');
   btn.disabled = true;
   btn.textContent = '...';
@@ -931,6 +962,7 @@ async function batchApplySingle(fullName, colName, btn) {
     });
     btn.textContent = 'Applied';
     btn.style.opacity = '0.5';
+    checkTableApplied(idx);
   } catch (e) {
     showToast(`Failed: ${e.message}`, true);
     btn.disabled = false;
