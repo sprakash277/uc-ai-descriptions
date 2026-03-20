@@ -18,6 +18,8 @@ resources:
       name: uc-ai-descriptions
       description: "AI-powered UC table/column descriptions with human-in-the-loop review"
       source_code_path: ./
+      user_api_scopes:
+        - sql
       config:
         command:
           - python
