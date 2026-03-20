@@ -352,31 +352,13 @@ async def list_warehouses():
 
 @router.get("/whoami")
 async def whoami(request: Request):
-    """Diagnostic endpoint — reports resolved identity and JWT claim details.
-
-    Does NOT return token values. Safe to call in production for debugging.
-    """
-    from .identity import _decode_jwt_payload, _LOCAL_USER
-
-    # Show all X-Forwarded-* and X-Databricks-* headers (names + safe values)
-    # Redact anything that looks like a token (long strings)
-    forwarded_headers = {}
-    for name, value in request.headers.items():
-        if name.lower().startswith(("x-forwarded-", "x-databricks-")):
-            forwarded_headers[name] = value if len(value) < 80 else f"<redacted, {len(value)} chars>"
-
-    token = request.headers.get("X-Forwarded-Access-Token", "")
-    header_present = bool(token)
-    payload = _decode_jwt_payload(token) if token else {}
+    """Diagnostic endpoint — reports resolved identity and available headers."""
+    from .identity import _LOCAL_USER
     return {
-        "header_present": header_present,
         "resolved_user": get_current_user(request),
-        "forwarded_headers": forwarded_headers,
-        "claims_found": list(payload.keys()),
-        "email_claim": payload.get("email"),
-        "sub_claim": payload.get("sub"),
-        "preferred_username_claim": payload.get("preferred_username"),
-        "username_claim": payload.get("username"),
+        "email": request.headers.get("x-forwarded-email"),
+        "preferred_username": request.headers.get("x-forwarded-preferred-username"),
+        "user_id": request.headers.get("x-forwarded-user"),
         "local_fallback": _LOCAL_USER,
     }
 
