@@ -532,9 +532,16 @@ async function apiFetch(url, opts = {}) {
   const resp = await fetch(url, { headers: { 'Content-Type': 'application/json' }, ...opts });
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({ detail: resp.statusText }));
-    throw new Error(err.detail || 'Request failed');
+    const error = new Error(err.detail || 'Request failed');
+    error.status = resp.status;
+    throw error;
   }
   return resp.json();
+}
+
+function apiErrorMessage(e, action = 'this operation') {
+  if (e.status === 403) return `Permission denied — you don't have access to ${action}.`;
+  return e.message || 'Request failed';
 }
 
 // ── Catalog Tree (Browse tab) ──────────────────────────────
@@ -680,7 +687,7 @@ async function generateDescriptions() {
     renderTableView();
     showToast(`Generated descriptions for ${Object.keys(suggestions).length} items`);
   } catch (e) {
-    showToast(`Generation failed: ${e.message}`, true);
+    showToast(apiErrorMessage(e, 'generate descriptions for this table'), true);
     btn.disabled = false;
     btn.innerHTML = '&#9889; Generate AI Descriptions';
   }
@@ -809,7 +816,7 @@ async function applyApproved() {
     showToast(`Applied ${ok} descriptions${fail > 0 ? `, ${fail} failed` : ''}${auditMsg}`, fail > 0);
     await selectTable(currentTable.full_name, null);
   } catch (e) {
-    showToast(`Apply failed: ${e.message}`, true);
+    showToast(apiErrorMessage(e, 'apply descriptions to this table'), true);
     btn.disabled = false;
     btn.innerHTML = '&#10003; Apply Approved to Metastore';
   }
@@ -916,7 +923,7 @@ async function runBatchGenerate() {
     showToast(`Generated descriptions for ${data.tables_processed} tables`);
   } catch (e) {
     document.getElementById('batch-progress').style.display = 'none';
-    showToast(`Batch failed: ${e.message}`, true);
+    showToast(apiErrorMessage(e, 'generate descriptions for this schema'), true);
   }
 
   btn.disabled = false;
@@ -997,7 +1004,7 @@ async function batchApplyTable(fullName, idx, btn) {
     }
     checkAllTablesApplied();
   } catch (e) {
-    showToast(`Failed: ${e.message}`, true);
+    showToast(apiErrorMessage(e, 'apply descriptions'), true);
     btn.disabled = false;
     btn.textContent = '\u2713 Apply All for ' + r.table_name;
 
@@ -1055,7 +1062,7 @@ async function batchApplySingle(fullName, colName, idx, btn) {
     btn.style.opacity = '0.5';
     checkTableApplied(idx);
   } catch (e) {
-    showToast(`Failed: ${e.message}`, true);
+    showToast(apiErrorMessage(e, 'apply descriptions'), true);
     btn.disabled = false;
     btn.textContent = 'Apply';
   }
@@ -1078,7 +1085,7 @@ async function regenerateSingleBrowse(key) {
     suggestions[key].status = 'pending';
     renderTableView();
   } catch (e) {
-    showToast(`Regeneration failed: ${e.message}`, true);
+    showToast(apiErrorMessage(e, 'regenerate this description'), true);
     if (btn) { btn.disabled = false; btn.textContent = '↺ Regen'; }
   }
 }
@@ -1103,7 +1110,7 @@ async function regenerateBatchCol(fullName, colName, idx, colIdx, btn) {
       applyBtn.style.opacity = '';
     }
   } catch (e) {
-    showToast(`Regeneration failed: ${e.message}`, true);
+    showToast(apiErrorMessage(e, 'regenerate this description'), true);
   }
   btn.disabled = false;
   btn.textContent = '↺';
@@ -1121,7 +1128,7 @@ async function regenerateBatchTable(fullName, idx, btn) {
     const el = document.getElementById(`batch-table-desc-${idx}`);
     if (el) el.textContent = data.description;
   } catch (e) {
-    showToast(`Regeneration failed: ${e.message}`, true);
+    showToast(apiErrorMessage(e, 'regenerate this description'), true);
   }
   btn.disabled = false;
   btn.textContent = '↺';

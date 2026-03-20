@@ -82,6 +82,15 @@ app_config = load_config()
 
 # ── Authentication (unchanged) ───────────────────────────────────────────
 
+def get_user_workspace_client(token: str) -> WorkspaceClient:
+    """Create a WorkspaceClient authenticated as the calling user.
+
+    Used for browse and apply operations so Unity Catalog enforces the
+    user's own permissions. Create per request — never cache.
+    """
+    return WorkspaceClient(host=get_workspace_host(), token=token)
+
+
 def get_workspace_client() -> WorkspaceClient:
     if IS_DATABRICKS_APP:
         return WorkspaceClient()
