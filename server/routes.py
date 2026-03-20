@@ -4,12 +4,13 @@ import logging
 import traceback
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
 from . import catalog, ai_gen, audit
 from .config import app_config, get_workspace_client
+from .identity import get_current_user
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
@@ -198,7 +199,7 @@ async def apply_column_comment(req: ApplyColumnCommentRequest):
 
 
 @router.post("/apply/batch")
-async def apply_batch(req: ApplyBatchRequest):
+async def apply_batch(req: ApplyBatchRequest, current_user: str = Depends(get_current_user)):
     """Apply approved table and column descriptions in one call, with audit logging."""
     results = {"table": None, "columns": {}, "errors": []}
     audit_actions = []
@@ -243,7 +244,7 @@ async def apply_batch(req: ApplyBatchRequest):
         if audit_actions:
             try:
                 audit.ensure_audit_table()
-                logged = audit.log_batch(req.full_name, audit_actions)
+                logged = audit.log_batch(req.full_name, audit_actions, applied_by=current_user)
                 results["audit_logged"] = logged
             except Exception as e:
                 logger.error("Audit logging failed: %s", e)
@@ -347,6 +348,19 @@ async def list_warehouses():
     except Exception as e:
         logger.error("List warehouses failed: %s", traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/whoami")
+async def whoami(request: Request):
+    """Diagnostic endpoint — reports resolved identity and available headers."""
+    from .identity import _LOCAL_USER
+    return {
+        "resolved_user": get_current_user(request),
+        "email": request.headers.get("x-forwarded-email"),
+        "preferred_username": request.headers.get("x-forwarded-preferred-username"),
+        "user_id": request.headers.get("x-forwarded-user"),
+        "local_fallback": _LOCAL_USER,
+    }
 
 
 @router.get("/health")
