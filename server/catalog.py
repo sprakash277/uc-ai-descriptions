@@ -12,8 +12,8 @@ from .sql_utils import validate_identifier, quote_identifier, escape_comment
 logger = logging.getLogger(__name__)
 
 
-def list_catalogs() -> list[dict]:
-    w = get_workspace_client()
+def list_catalogs(w=None) -> list[dict]:
+    w = w or get_workspace_client()
     return [
         {"name": c.name, "comment": c.comment or ""}
         for c in w.catalogs.list()
@@ -21,8 +21,8 @@ def list_catalogs() -> list[dict]:
     ]
 
 
-def list_schemas(catalog: str) -> list[dict]:
-    w = get_workspace_client()
+def list_schemas(catalog: str, w=None) -> list[dict]:
+    w = w or get_workspace_client()
     return [
         {"name": s.name, "comment": s.comment or ""}
         for s in w.schemas.list(catalog_name=catalog)
@@ -30,8 +30,8 @@ def list_schemas(catalog: str) -> list[dict]:
     ]
 
 
-def list_tables(catalog: str, schema: str) -> list[dict]:
-    w = get_workspace_client()
+def list_tables(catalog: str, schema: str, w=None) -> list[dict]:
+    w = w or get_workspace_client()
     return [
         {
             "name": t.name,
@@ -43,9 +43,9 @@ def list_tables(catalog: str, schema: str) -> list[dict]:
     ]
 
 
-def get_table_details(full_name: str) -> dict[str, Any]:
+def get_table_details(full_name: str, w=None) -> dict[str, Any]:
     """Get table metadata including columns."""
-    w = get_workspace_client()
+    w = w or get_workspace_client()
     t = w.tables.get(full_name)
     columns = []
     if t.columns:
@@ -70,12 +70,12 @@ def get_table_details(full_name: str) -> dict[str, Any]:
     }
 
 
-def apply_table_comment(full_name: str, comment: str) -> bool:
+def apply_table_comment(full_name: str, comment: str, w=None) -> bool:
     """Apply a comment to a table using SQL."""
     from databricks.sdk.service.sql import StatementState
 
     validate_identifier(full_name)
-    w = get_workspace_client()
+    w = w or get_workspace_client()
     warehouse_id = resolve_warehouse_id()
 
     escaped = escape_comment(comment)
@@ -89,12 +89,12 @@ def apply_table_comment(full_name: str, comment: str) -> bool:
     return resp.status and resp.status.state == StatementState.SUCCEEDED
 
 
-def apply_column_comment(full_name: str, column_name: str, comment: str) -> bool:
+def apply_column_comment(full_name: str, column_name: str, comment: str, w=None) -> bool:
     """Apply a comment to a column using SQL."""
     from databricks.sdk.service.sql import StatementState
 
     validate_identifier(full_name)
-    w = get_workspace_client()
+    w = w or get_workspace_client()
     warehouse_id = resolve_warehouse_id()
 
     escaped = escape_comment(comment)

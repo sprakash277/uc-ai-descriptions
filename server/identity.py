@@ -17,6 +17,16 @@ logger = logging.getLogger(__name__)
 _LOCAL_USER = os.environ.get("DEV_USER_EMAIL", "dev_user")
 
 
+def get_user_token(request: Request) -> str | None:
+    """Return the user's OAuth token forwarded by the Databricks Apps proxy.
+
+    Only present when On-Behalf-Of (OBO) authorization is enabled in the
+    Databricks Apps UI and user_api_scopes are declared in databricks.yml.
+    Returns None in local dev or when OBO is not yet configured.
+    """
+    return request.headers.get("x-forwarded-access-token") or None
+
+
 def get_current_user(request: Request) -> str:
     """FastAPI dependency — returns the calling user's email/username.
 

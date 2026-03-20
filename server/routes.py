@@ -8,47 +8,70 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
+from databricks.sdk.errors import PermissionDenied
+
 from . import catalog, ai_gen, audit
-from .config import app_config, get_workspace_client
-from .identity import get_current_user
+from .config import app_config, get_workspace_client, get_user_workspace_client
+from .identity import get_current_user, get_user_token
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
 
 
+def get_request_client(request: Request):
+    """FastAPI dependency: user WorkspaceClient when OBO token is present,
+    otherwise the app service principal client (graceful degradation).
+
+    NOTE: OBO must be enabled in the Databricks Apps UI before the user
+    token will be forwarded. Until then all requests use the SP client.
+    """
+    token = get_user_token(request)
+    if token:
+        return get_user_workspace_client(token)
+    return get_workspace_client()
+
+
 # ── Browse endpoints ─────────────────────────────────────────────────────
 
 @router.get("/catalogs")
-async def get_catalogs():
+async def get_catalogs(w=Depends(get_request_client)):
     try:
-        return {"catalogs": catalog.list_catalogs()}
+        return {"catalogs": catalog.list_catalogs(w=w)}
+    except PermissionDenied as e:
+        raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
         logger.error("List catalogs failed: %s", traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/schemas/{catalog_name}")
-async def get_schemas(catalog_name: str):
+async def get_schemas(catalog_name: str, w=Depends(get_request_client)):
     try:
-        return {"schemas": catalog.list_schemas(catalog_name)}
+        return {"schemas": catalog.list_schemas(catalog_name, w=w)}
+    except PermissionDenied as e:
+        raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
         logger.error("List schemas failed: %s", traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/tables/{catalog_name}/{schema_name}")
-async def get_tables(catalog_name: str, schema_name: str):
+async def get_tables(catalog_name: str, schema_name: str, w=Depends(get_request_client)):
     try:
-        return {"tables": catalog.list_tables(catalog_name, schema_name)}
+        return {"tables": catalog.list_tables(catalog_name, schema_name, w=w)}
+    except PermissionDenied as e:
+        raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
         logger.error("List tables failed: %s", traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/table/{full_name:path}")
-async def get_table_details(full_name: str):
+async def get_table_details(full_name: str, w=Depends(get_request_client)):
     try:
-        return {"table": catalog.get_table_details(full_name)}
+        return {"table": catalog.get_table_details(full_name, w=w)}
+    except PermissionDenied as e:
+        raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
         logger.error("Get table details failed: %s", traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
@@ -63,10 +86,10 @@ class GenerateRequest(BaseModel):
 
 
 @router.post("/generate")
-async def generate_descriptions(req: GenerateRequest):
+async def generate_descriptions(req: GenerateRequest, w=Depends(get_request_client)):
     """Generate AI descriptions for a table and its columns."""
     try:
-        table_info = catalog.get_table_details(req.full_name)
+        table_info = catalog.get_table_details(req.full_name, w=w)
         suggestions = ai_gen.generate_descriptions(table_info, model=req.model, rules_override=req.rules_override)
         return {
             "status": "success",
@@ -75,6 +98,8 @@ async def generate_descriptions(req: GenerateRequest):
             "suggestions": suggestions,
             "columns": table_info["columns"],
         }
+    except PermissionDenied as e:
+        raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
         logger.error("Generate failed: %s", traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
@@ -90,16 +115,18 @@ class GenerateItemRequest(BaseModel):
 
 
 @router.post("/generate/item")
-async def generate_item_description(req: GenerateItemRequest):
+async def generate_item_description(req: GenerateItemRequest, w=Depends(get_request_client)):
     """Re-generate AI description for a single table or column (using full table context)."""
     try:
-        table_info = catalog.get_table_details(req.full_name)
+        table_info = catalog.get_table_details(req.full_name, w=w)
         suggestions = ai_gen.generate_descriptions(table_info, model=req.model, rules_override=req.rules_override)
         if req.item_name is None:
             description = suggestions["table_description"]
         else:
             description = suggestions["column_descriptions"].get(req.item_name, "")
         return {"status": "success", "description": description}
+    except PermissionDenied as e:
+        raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
         logger.error("Generate item failed: %s", traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
@@ -115,10 +142,10 @@ class BatchGenerateRequest(BaseModel):
 
 
 @router.post("/generate/batch")
-async def batch_generate_descriptions(req: BatchGenerateRequest):
+async def batch_generate_descriptions(req: BatchGenerateRequest, w=Depends(get_request_client)):
     """Generate AI descriptions for ALL tables in a schema."""
     try:
-        tables = catalog.list_tables(req.catalog_name, req.schema_name)
+        tables = catalog.list_tables(req.catalog_name, req.schema_name, w=w)
         results = []
         errors = []
 
@@ -127,7 +154,7 @@ async def batch_generate_descriptions(req: BatchGenerateRequest):
             if t["name"].startswith("_ai_"):
                 continue
             try:
-                table_info = catalog.get_table_details(t["full_name"])
+                table_info = catalog.get_table_details(t["full_name"], w=w)
                 suggestions = ai_gen.generate_descriptions(table_info, model=req.model, rules_override=req.rules_override)
                 results.append({
                     "full_name": t["full_name"],
@@ -179,27 +206,33 @@ class ApplyBatchRequest(BaseModel):
 
 
 @router.post("/apply/table")
-async def apply_table_comment(req: ApplyTableCommentRequest):
+async def apply_table_comment(req: ApplyTableCommentRequest, w=Depends(get_request_client)):
     try:
-        success = catalog.apply_table_comment(req.full_name, req.comment)
+        success = catalog.apply_table_comment(req.full_name, req.comment, w=w)
         return {"status": "success" if success else "failed", "full_name": req.full_name}
+    except PermissionDenied as e:
+        raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
         logger.error("Apply table comment failed: %s", traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/apply/column")
-async def apply_column_comment(req: ApplyColumnCommentRequest):
+async def apply_column_comment(req: ApplyColumnCommentRequest, w=Depends(get_request_client)):
     try:
-        success = catalog.apply_column_comment(req.full_name, req.column_name, req.comment)
+        success = catalog.apply_column_comment(req.full_name, req.column_name, req.comment, w=w)
         return {"status": "success" if success else "failed"}
+    except PermissionDenied as e:
+        raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
         logger.error("Apply column comment failed: %s", traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/apply/batch")
-async def apply_batch(req: ApplyBatchRequest, current_user: str = Depends(get_current_user)):
+async def apply_batch(req: ApplyBatchRequest,
+                      w=Depends(get_request_client),
+                      current_user: str = Depends(get_current_user)):
     """Apply approved table and column descriptions in one call, with audit logging."""
     results = {"table": None, "columns": {}, "errors": []}
     audit_actions = []
@@ -207,7 +240,7 @@ async def apply_batch(req: ApplyBatchRequest, current_user: str = Depends(get_cu
     try:
         if req.table_comment:
             try:
-                success = catalog.apply_table_comment(req.full_name, req.table_comment)
+                success = catalog.apply_table_comment(req.full_name, req.table_comment, w=w)
                 results["table"] = "success" if success else "failed"
                 if success:
                     audit_actions.append({
@@ -224,7 +257,7 @@ async def apply_batch(req: ApplyBatchRequest, current_user: str = Depends(get_cu
 
         for col_name, comment in req.column_comments.items():
             try:
-                success = catalog.apply_column_comment(req.full_name, col_name, comment)
+                success = catalog.apply_column_comment(req.full_name, col_name, comment, w=w)
                 results["columns"][col_name] = "success" if success else "failed"
                 if success:
                     ai_orig = req.ai_column_suggestions.get(col_name, comment)
