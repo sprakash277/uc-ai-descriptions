@@ -35,19 +35,37 @@ Request → Databricks     │  browse / apply operations              │
 
 ---
 
-## Phase A — Enable OBO in Databricks Apps UI (one-time manual step)
+## Phase A — Enable OBO
 
-This is not a code change. In the Databricks Apps UI:
+OBO setup is split into two parts:
 
-1. Navigate to the app settings for `uc-ai-descriptions`
+### A1 — Workspace toggle (one-time manual, admin required)
+
+No API or programmatic equivalent exists for this step. A workspace admin must:
+
+1. Navigate to the Databricks Apps settings in the workspace UI
 2. Enable **"On-behalf-of-user authorization"**
-3. Select scopes: at minimum `sql` (for warehouse/SQL execution) and `unity-catalog` (for catalog API calls)
-4. Save and redeploy
+3. Restart any existing apps after enabling
 
-After this step, `x-forwarded-access-token` will be present in all proxied requests.
-Verify with `/api/whoami` (which already shows all forwarded headers).
+This is a workspace-level feature flag. Once enabled it applies to all apps in the workspace and never needs to be repeated.
 
-**Note:** Until Phase A is complete, Phases B–D should degrade gracefully to the SP client.
+Verify it worked: hit `/api/whoami` after redeploy — `x-forwarded-access-token` should appear in `forwarded_headers`.
+
+### A2 — Declare scopes in databricks.yml (automated, already done)
+
+`user_api_scopes` is supported in `databricks.yml` under `resources.apps` (added in Databricks CLI 0.246.0). The `sql` scope has been added and will be applied on every `databricks bundle deploy`:
+
+```yaml
+resources:
+  apps:
+    uc-ai-descriptions:
+      user_api_scopes:
+        - sql
+```
+
+The `sql` scope covers both SQL warehouse execution and Unity Catalog API calls. No further UI interaction needed after A1.
+
+**Note:** Until A1 is complete, Phases B–D degrade gracefully to the SP client.
 
 ---
 

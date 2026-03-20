@@ -27,6 +27,8 @@ resources:
       # If omitted, Databricks creates a dedicated SP automatically on first deploy.
       # run_as:
       #   service_principal_name: ${var.service_principal_id}
+      user_api_scopes:
+        - sql
       config:
         command:
           - python
