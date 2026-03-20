@@ -350,6 +350,28 @@ async def list_warehouses():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/whoami")
+async def whoami(request: Request):
+    """Diagnostic endpoint — reports resolved identity and JWT claim details.
+
+    Does NOT return the raw token. Safe to call in production for debugging.
+    """
+    from .identity import _decode_jwt_payload, _LOCAL_USER
+    token = request.headers.get("X-Forwarded-Access-Token", "")
+    header_present = bool(token)
+    payload = _decode_jwt_payload(token) if token else {}
+    return {
+        "header_present": header_present,
+        "resolved_user": get_current_user(request),
+        "claims_found": list(payload.keys()),
+        "email_claim": payload.get("email"),
+        "sub_claim": payload.get("sub"),
+        "preferred_username_claim": payload.get("preferred_username"),
+        "username_claim": payload.get("username"),
+        "local_fallback": _LOCAL_USER,
+    }
+
+
 @router.get("/health")
 async def health():
     return {"status": "ok", "service": "uc-ai-descriptions"}
