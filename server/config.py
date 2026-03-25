@@ -87,8 +87,22 @@ def get_user_workspace_client(token: str) -> WorkspaceClient:
 
     Used for browse and apply operations so Unity Catalog enforces the
     user's own permissions. Create per request — never cache.
+
+    Uses a custom CredentialsStrategy to bypass env var credential detection,
+    which would otherwise conflict with the app SP's DATABRICKS_CLIENT_ID/SECRET.
     """
-    return WorkspaceClient(host=get_workspace_host(), token=token)
+    from databricks.sdk.credentials_provider import CredentialsStrategy
+
+    bearer = f"Bearer {token}"
+
+    class _OBOToken(CredentialsStrategy):
+        def auth_type(self) -> str:
+            return "obo-token"
+
+        def __call__(self, cfg):
+            return lambda: {"Authorization": bearer}
+
+    return WorkspaceClient(host=get_workspace_host(), credentials_strategy=_OBOToken())
 
 
 def get_workspace_client() -> WorkspaceClient:

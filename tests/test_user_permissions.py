@@ -65,23 +65,39 @@ def test_get_request_client_falls_back_to_sp_when_no_token():
 def test_catalog_functions_use_provided_client():
     """catalog.py functions use the passed-in client, not get_workspace_client()."""
     from server import catalog
+    from databricks.sdk.service.sql import StatementState
+
+    mock_status = MagicMock()
+    mock_status.state = StatementState.SUCCEEDED
+    mock_resp = MagicMock()
+    mock_resp.status = mock_status
+    mock_resp.result = None
 
     mock_w = MagicMock()
-    mock_w.catalogs.list.return_value = []
+    mock_w.statement_execution.execute_statement.return_value = mock_resp
 
-    with patch("server.catalog.get_workspace_client") as mock_default:
+    with patch("server.catalog.get_workspace_client") as mock_default, \
+         patch("server.catalog.resolve_warehouse_id", return_value="wh-123"):
         catalog.list_catalogs(w=mock_w)
-        mock_w.catalogs.list.assert_called_once()
+        mock_w.statement_execution.execute_statement.assert_called_once()
         mock_default.assert_not_called()
 
 
 def test_catalog_functions_fall_back_to_default_client():
     """catalog.py functions fall back to SP client when w= not provided."""
     from server import catalog
+    from databricks.sdk.service.sql import StatementState
+
+    mock_status = MagicMock()
+    mock_status.state = StatementState.SUCCEEDED
+    mock_resp = MagicMock()
+    mock_resp.status = mock_status
+    mock_resp.result = None
 
     mock_default_w = MagicMock()
-    mock_default_w.catalogs.list.return_value = []
+    mock_default_w.statement_execution.execute_statement.return_value = mock_resp
 
-    with patch("server.catalog.get_workspace_client", return_value=mock_default_w):
+    with patch("server.catalog.get_workspace_client", return_value=mock_default_w), \
+         patch("server.catalog.resolve_warehouse_id", return_value="wh-123"):
         catalog.list_catalogs()
-        mock_default_w.catalogs.list.assert_called_once()
+        mock_default_w.statement_execution.execute_statement.assert_called_once()

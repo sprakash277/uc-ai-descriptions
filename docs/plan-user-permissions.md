@@ -237,3 +237,58 @@ New tests in `tests/test_user_permissions.py`:
 3. **OBO scope selection**: The scopes declared when enabling OBO in the UI must cover what the app needs (catalog API calls + SQL warehouse). If scopes are too narrow the token will be valid but operations will fail with permission denied.
 
 4. **Generate endpoints with restricted tables**: If a user can read a table but their token doesn't have sufficient scope for the serving endpoint call, AI generation will fail. This is the SP's job — only the `get_table_details()` call within generate should use the user client; the actual AI call continues using the SP's serving endpoint credentials.
+
+---
+
+## Implementation note: why catalog.py uses SQL instead of the UC REST API
+
+This was discovered during implementation and required a significant design pivot.
+
+### What we tried first
+
+The original plan (Phase C above) was to pass the OBO WorkspaceClient through to the existing UC REST API calls:
+
+```python
+w.catalogs.list()
+w.schemas.list(catalog_name=catalog)
+w.tables.list(catalog_name=catalog, schema_name=schema)
+w.tables.get(full_name)
+```
+
+This is the natural SDK approach and would give us per-user access control automatically.
+
+### Why it doesn't work
+
+Databricks Apps OBO only supports three `user_api_scopes` values:
+
+| Scope | Covers |
+|-------|--------|
+| `sql` | SQL Statement Execution API (warehouses) |
+| `dashboards.genie` | Genie AI/BI spaces |
+| `files.files` | Files API |
+
+The Unity Catalog REST API (`/api/2.1/unity-catalog/*`) requires a `unity-catalog` scope. When you call `w.catalogs.list()` with an OBO token that only has `sql` scope, the platform returns:
+
+```
+403 Forbidden: Invalid scope, required scopes: unity-catalog
+```
+
+And you cannot declare `unity-catalog` in `user_api_scopes` — the platform rejects it as an invalid value. There is currently no way to get a Databricks Apps OBO token that covers the UC REST API.
+
+### The SQL solution
+
+The SQL Statement Execution API (covered by the `sql` scope) can browse UC metadata via:
+
+- `SHOW CATALOGS`
+- `catalog.information_schema.schemata`
+- `catalog.information_schema.tables`
+- `catalog.information_schema.columns`
+
+Unity Catalog's `information_schema` views are **automatically permission-filtered**: queries return only the objects the calling user has been granted access to. This provides exactly the per-user browsing enforcement the original plan called for, without needing a UC REST API scope.
+
+### Implications
+
+- All of `catalog.py`'s browse functions now use `_run_sql()` instead of SDK REST methods
+- The `sql` scope alone is sufficient for both browsing and applying descriptions
+- `databricks.yml` declares only `user_api_scopes: [sql]`
+- The `CredentialsStrategy` pattern in `config.py` is still required to prevent the OBO token from conflicting with the app SP's env var credentials
