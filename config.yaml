@@ -4,7 +4,7 @@ responsible_ai_rules: |
   - Do not reference internal system names or implementation details.
 
 audit:
-  table: "governance.ai_descriptions.audit_log"
+  table: "gcp_tpcdi_sandbox.ai_descriptions.audit_log"
 
 exclusions:
   catalogs:
