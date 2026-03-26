@@ -1,6 +1,6 @@
 ## Summary
 
-Full refresh of the UC AI Descriptions app: security hardening, a test suite, operational improvements, and a significant set of UX upgrades to the single-table and batch schema workflows. Tested end-to-end on a live AWS workspace (fevm-shauver-snap-demo).
+Full refresh of the UC AI Descriptions app: security hardening, a test suite, operational improvements, and a significant set of UX upgrades to the single-table and batch schema workflows. Tested end-to-end on a live AWS workspace.
 
 ---
 
@@ -74,9 +74,50 @@ Full refresh of the UC AI Descriptions app: security hardening, a test suite, op
 
 ---
 
+---
+
+## Per-user UC permissions (Phase 3)
+
+Browse, generate, and apply operations now run under the **calling user's own identity** rather than the shared app service principal. Users can only see and modify objects their UC permissions allow.
+
+### How it works
+
+When a user opens the app, Databricks Apps prompts them to authorize it (once per app version). Their OAuth token is then forwarded on every request as `X-Forwarded-Access-Token`. A FastAPI dependency (`get_request_client`) detects the token and constructs a per-request `WorkspaceClient` authenticated as that user. If no token is present (OBO not enabled, or local dev), the app falls back gracefully to the SP.
+
+```
+Browse / Apply:  User OBO token → SQL Execution → UC enforces user's permissions
+AI Generation:   User OBO token → catalog read only (serving endpoint call stays SP)
+Audit log:       SP always      → user may not have write access to audit catalog
+```
+
+### Why browse uses SQL instead of the UC REST API
+
+The original design called for passing the user's `WorkspaceClient` to `w.catalogs.list()`, `w.schemas.list()`, etc. This doesn't work.
+
+Databricks Apps OBO only supports three `user_api_scopes` values: `sql`, `dashboards.genie`, and `files.files`. The Unity Catalog REST API requires a `unity-catalog` scope — which is not a valid `user_api_scopes` value. Attempting it returns `403: required scopes: unity-catalog`.
+
+**The fix:** Unity Catalog's `information_schema` views (`schemata`, `tables`, `columns`) and `SHOW CATALOGS` are accessible via the SQL Statement Execution API, which the `sql` scope covers. These views are automatically permission-filtered by UC — queries return only what the calling user has access to. Routing all browse operations through the warehouse via an OBO token gives us per-user enforcement with no additional scope required.
+
+See `server/catalog.py` module docstring and `docs/plan-user-permissions.md` for full detail.
+
+### OBO setup required (workspace admin, one-time)
+
+1. Workspace settings → Previews → enable **"On-Behalf-Of User Authorization"**
+2. Restart any existing apps
+
+`databricks.yml` declares `user_api_scopes: [sql]` — no further UI steps needed after the workspace toggle.
+
+### Technical notes
+
+- `get_user_workspace_client()` in `config.py` uses a custom `CredentialsStrategy` rather than passing `token=` directly. This is necessary because the app SP's `DATABRICKS_CLIENT_ID`/`DATABRICKS_CLIENT_SECRET` env vars are always present and cause the SDK to throw "more than one authorization method configured" if a token is also passed.
+- `catalog.py` was rewritten to use `_run_sql()` for all operations — browse via `information_schema`, apply via `COMMENT ON TABLE` / `ALTER TABLE COLUMN COMMENT`. The UC REST API is no longer used anywhere in the browse path.
+- 6 tests added/updated in `test_user_permissions.py`
+
+---
+
 ## Test plan
 
-Testing was performed on a live AWS workspace (fevm-shauver-snap-demo).
+Testing was performed on a live AWS workspace.
 
 - [x] All 18 unit tests pass (`pytest tests/ -v`)
 - [x] Single-table workflow: generate → per-item regen → approve / reject / edit → apply to metastore
