@@ -255,6 +255,15 @@
 
   .progress-bar { height: 4px; background: var(--border); border-radius: 2px; margin: 16px 0; }
   .progress-bar-fill { height: 100%; background: var(--accent); border-radius: 2px; transition: width 0.3s; }
+
+  .session-rules-bar {
+    padding: 8px 24px; background: var(--surface); border-bottom: 1px solid var(--border);
+    font-size: 13px;
+  }
+  .session-rules-badge {
+    font-size: 11px; font-weight: 600; padding: 1px 6px; border-radius: 3px;
+    border: 1px solid var(--orange); color: var(--orange); margin-left: 8px;
+  }
 </style>
 </head>
 <body>
@@ -274,6 +283,7 @@
 
 <!-- ═══ TAB: Browse & Generate ═══════════════════════════════════════ -->
 <div id="tab-browse" class="tab-content">
+  <div id="session-rules-browse" class="session-rules-bar"></div>
   <div class="layout">
     <div class="sidebar">
       <h2>Catalog Browser</h2>
@@ -291,6 +301,7 @@
 
 <!-- ═══ TAB: Batch Schema ════════════════════════════════════════════ -->
 <div id="tab-batch" class="tab-content" style="display:none;">
+  <div id="session-rules-batch" class="session-rules-bar"></div>
   <div class="full-panel">
     <div class="section">
       <div class="section-title">&#9889; Batch Generate Descriptions for Entire Schema</div>
@@ -328,26 +339,34 @@
 
 <!-- ═══ TAB: Responsible AI Rules ════════════════════════════════════ -->
 <div id="tab-rules" class="tab-content" style="display:none;">
+  <div id="session-rules-rules" class="session-rules-bar"></div>
   <div class="full-panel">
     <div class="section">
-      <div class="section-title">&#128737; Responsible AI Rules</div>
-      <p style="color:var(--text-dim); font-size:13px; margin-bottom:16px;">
-        These rules are injected into the AI system prompt before every generation request.
-        They are configured in <code style="background:var(--surface2); padding:2px 6px; border-radius:4px; font-size:12px;">config.yaml</code> and apply to all generations (single table and batch).
-      </p>
-      <textarea class="rules-textarea" id="custom-rules" readonly style="background:var(--bg); cursor:default; opacity:0.85;" placeholder="(No rules configured. Add rules to config.yaml)"></textarea>
-      <div style="margin-top:12px; display:flex; gap:12px; align-items:center;">
-        <span style="color:var(--text-dim); font-size:12px;">To modify rules, edit <code style="background:var(--surface2); padding:2px 6px; border-radius:4px; font-size:11px;">config.yaml</code> and redeploy.</span>
+      <div class="section-title" style="justify-content:space-between;">
+        <span>&#128737; Currently Effective Rules</span>
+        <span id="rules-effective-badge"></span>
       </div>
+      <p id="rules-effective-desc" style="color:var(--text-dim); font-size:13px; margin-bottom:12px;"></p>
+      <textarea class="rules-textarea" id="custom-rules" readonly style="background:var(--bg); cursor:default; opacity:0.85;" placeholder="(No rules configured)"></textarea>
     </div>
+
+    <div class="section" id="rules-org-section" style="display:none;">
+      <div class="section-title" style="color:var(--text-dim);">
+        &#128196; System Rules
+        <span style="font-size:12px; font-weight:normal; margin-left:6px;">from config.yaml — not currently active</span>
+      </div>
+      <textarea class="rules-textarea" id="org-rules-display" readonly
+        style="background:var(--bg); cursor:default; opacity:0.5; height:120px;"></textarea>
+    </div>
+
     <div class="section">
       <div class="section-title">&#128161; How Rules Are Applied</div>
       <ul style="color:var(--text-dim); font-size:13px; padding-left:20px;">
         <li>Rules are injected into the AI system prompt before every generation request</li>
         <li>They apply to both single-table and batch schema generation</li>
-        <li>Rules are version-controlled in <code style="background:var(--surface2); padding:2px 6px; border-radius:4px; font-size:12px;">config.yaml</code></li>
-        <li>Changes require a redeploy to take effect</li>
-        <li>For automated notebooks, export a notebook — rules are embedded in the code</li>
+        <li>Session overrides (above) apply only for your current browser session and are not saved</li>
+        <li>System rules are version-controlled in <code style="background:var(--surface2); padding:2px 6px; border-radius:4px; font-size:12px;">config.yaml</code> — changes require a redeploy</li>
+        <li>For automated notebooks, export a notebook — rules are embedded at export time</li>
       </ul>
     </div>
   </div>
@@ -430,6 +449,72 @@ const API = '/api';
 let currentTable = null;
 let suggestions = {};
 let batchResults = [];
+
+// ── Session Rules Override ──────────────────────────────────
+let sessionRules = null;      // null = use org rules; string = active override
+let sessionRulesOpen = false; // whether the panel is expanded
+let orgRules = '';            // org rules loaded from /api/rules (cached)
+
+async function ensureOrgRules() {
+  if (!orgRules) {
+    try { orgRules = (await apiFetch(`${API}/rules`)).rules || ''; } catch (e) {}
+  }
+}
+
+function renderSessionRulesPanel(tabId) {
+  const el = document.getElementById(`session-rules-${tabId}`);
+  if (!el) return;
+  const isCustom = sessionRules !== null;
+  const badge = isCustom
+    ? '<span class="session-rules-badge">CUSTOM</span>'
+    : '<span style="font-size:11px; color:var(--text-dim); margin-left:8px;">using org defaults</span>';
+  const chevron = sessionRulesOpen ? '▲' : '▼';
+
+  let html = `<div style="display:flex; justify-content:space-between; align-items:center; cursor:pointer; user-select:none;"
+      onclick="toggleSessionRules('${tabId}')">
+    <div>&#9881; <strong style="font-size:13px;">Session Rules Override</strong>${badge}</div>
+    <span style="font-size:11px; color:var(--text-dim);">${chevron} ${sessionRulesOpen ? 'collapse' : 'expand'}</span>
+  </div>`;
+
+  if (sessionRulesOpen) {
+    html += `<div style="margin-top:10px; padding:12px; background:var(--bg); border:1px solid var(--border); border-radius:var(--radius);">
+      <div style="font-size:11px; color:var(--text-dim); margin-bottom:8px;">
+        Applies to generations in this browser session only — not saved. Edit to override the org rules for your current work.
+      </div>
+      <textarea id="session-rules-text-${tabId}" style="width:100%; height:110px; padding:8px; background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); color:var(--text); font-family:monospace; font-size:12px; resize:vertical; box-sizing:border-box;">${sessionRules !== null ? sessionRules : orgRules}</textarea>
+      <div style="margin-top:8px; display:flex; gap:8px;">
+        <button class="btn btn-sm btn-success" onclick="applySessionRules('${tabId}')">&#10003; Use for this session</button>
+        <button class="btn btn-sm" onclick="clearSessionRules('${tabId}')">&#8634; Reset to org defaults</button>
+      </div>
+    </div>`;
+  }
+  el.innerHTML = html;
+}
+
+async function toggleSessionRules(tabId) {
+  sessionRulesOpen = !sessionRulesOpen;
+  if (sessionRulesOpen) await ensureOrgRules();
+  renderSessionRulesPanel(tabId);
+}
+
+function applySessionRules(tabId) {
+  const ta = document.getElementById(`session-rules-text-${tabId}`);
+  const text = ta ? ta.value.trim() : '';
+  sessionRules = text || null;
+  sessionRulesOpen = false;
+  for (const t of ['browse', 'batch', 'rules']) renderSessionRulesPanel(t);
+  renderRulesTabContent();
+  showToast(sessionRules ? 'Custom rules active for this session' : 'Reverted to org defaults');
+}
+
+function clearSessionRules(tabId) {
+  sessionRules = null;
+  const ta = document.getElementById(`session-rules-text-${tabId}`);
+  if (ta) ta.value = orgRules;
+  for (const t of ['browse', 'batch', 'rules']) renderSessionRulesPanel(t);
+  renderRulesTabContent();
+  showToast('Reverted to org defaults');
+}
 
 // ── Tab Switching ──────────────────────────────────────────
 function switchTab(tab) {
@@ -557,10 +642,10 @@ function renderTableView() {
       </div>
       <button class="btn btn-primary" onclick="generateDescriptions()" id="generate-btn">&#9889; Generate AI Descriptions</button>
     </div>
-    <div class="section">
+    ${!hasSuggestions ? `<div class="section">
       <div class="section-title">&#128196; Table Description</div>
       ${t.comment ? `<div style="font-size:13px;">${t.comment}</div>` : `<div class="desc-current">(No description set)</div>`}
-    </div>`;
+    </div>` : ''}`;
 
   if (hasSuggestions) {
     html += renderSuggestions();
@@ -584,7 +669,7 @@ async function generateDescriptions() {
   btn.disabled = true;
   btn.innerHTML = '<div class="spinner"></div> Generating with Claude...';
   try {
-    const data = await apiFetch(`${API}/generate`, { method: 'POST', body: JSON.stringify({ full_name: currentTable.full_name }) });
+    const data = await apiFetch(`${API}/generate`, { method: 'POST', body: JSON.stringify({ full_name: currentTable.full_name, rules_override: sessionRules }) });
     suggestions = {};
     const s = data.suggestions;
     suggestions['__table__'] = { original: s.table_description, current: s.table_description, status: 'pending', currentComment: currentTable.comment || '' };
@@ -604,45 +689,52 @@ async function generateDescriptions() {
 function renderSuggestions() {
   let html = '';
   const ts = suggestions['__table__'];
+  const colKeys = Object.keys(suggestions).filter(k => k !== '__table__');
+  const totalCount = Object.keys(suggestions).length;
+
+  // TODO(frontend): Approve All / Reject All buttons are at the top-right of this section,
+  // but Regenerate and Apply to Metastore are pinned to the bottom (apply-bar).
+  // These bulk actions should all live in the same place — move Approve All / Reject All
+  // down into the apply-bar alongside Regenerate and Apply to Metastore.
+  html += `<div class="section"><div class="section-title" style="justify-content:space-between;">
+    <span>&#9889; AI-Suggested Descriptions (${totalCount})</span>
+    <span><button class="btn btn-sm btn-success" onclick="approveAll()">&#10003; Approve All</button>
+    <button class="btn btn-sm btn-outline" onclick="rejectAll()">&#10007; Reject All</button>
+    <button class="btn btn-sm btn-outline" onclick="resetAll()">&#8634; Clear All</button></span>
+  </div>`;
+
   if (ts) {
-    html += `<div class="section"><div class="section-title">&#9889; AI-Suggested Table Description</div>
-      <div class="suggestion-row ${ts.status}" id="suggestion-__table__">
-        <div class="suggestion-label">Table</div>
-        <div class="suggestion-name">${currentTable.full_name}</div>
-        ${ts.currentComment ? `<div class="suggestion-current">Current: ${ts.currentComment}</div>` : `<div class="suggestion-current"><em>No current description</em></div>`}
-        <div class="suggestion-ai"><textarea id="text-__table__" onchange="markEdited('__table__')">${ts.current}</textarea></div>
-        <div class="suggestion-actions">
-          <button class="btn btn-sm btn-success" onclick="setStatus('__table__', 'approved')">&#10003; Approve</button>
-          <button class="btn btn-sm btn-outline" onclick="setStatus('__table__', 'rejected')">&#10007; Reject</button>
-          <button class="btn btn-sm btn-outline" onclick="resetSuggestion('__table__')">&#8634; Reset</button>
-          <span class="status-label ${ts.status !== 'pending' ? 'status-' + ts.status : ''}" id="status-__table__">${ts.status !== 'pending' ? ts.status.toUpperCase() : ''}</span>
-        </div>
+    html += `<div class="suggestion-row ${ts.status}" id="suggestion-__table__">
+      <div class="suggestion-label">Table</div>
+      <div class="suggestion-name">${currentTable.full_name}</div>
+      ${ts.currentComment ? `<div class="suggestion-current">Current: ${ts.currentComment}</div>` : `<div class="suggestion-current"><em>No current description</em></div>`}
+      <div class="suggestion-ai"><textarea id="text-__table__" onchange="markEdited('__table__')">${ts.current}</textarea></div>
+      <div class="suggestion-actions">
+        <button class="btn btn-sm btn-success" onclick="setStatus('__table__', 'approved')">&#10003;</button>
+        <button class="btn btn-sm btn-outline" onclick="setStatus('__table__', 'rejected')">&#10007;</button>
+        <button class="btn btn-sm btn-outline" onclick="resetSuggestion('__table__')">&#8634;</button>
+        <button class="btn btn-sm btn-outline" id="regen-btn-__table__" onclick="regenerateSingleBrowse('__table__')" title="Regenerate">&#8635; Regen</button>
+        <span class="status-label ${ts.status !== 'pending' ? 'status-' + ts.status : ''}" id="status-__table__">${ts.status !== 'pending' ? ts.status.toUpperCase() : ''}</span>
       </div></div>`;
   }
 
-  const colKeys = Object.keys(suggestions).filter(k => k !== '__table__');
-  if (colKeys.length > 0) {
-    html += `<div class="section"><div class="section-title" style="justify-content:space-between;">
-      <span>&#9889; AI-Suggested Column Descriptions (${colKeys.length})</span>
-      <span><button class="btn btn-sm btn-success" onclick="approveAll()">&#10003; Approve All</button>
-      <button class="btn btn-sm btn-outline" onclick="rejectAll()">&#10007; Reject All</button></span>
-    </div>`;
-    for (const colName of colKeys) {
-      const s = suggestions[colName];
-      html += `<div class="suggestion-row ${s.status}" id="suggestion-${colName}">
-        <div class="suggestion-label">Column</div>
-        <div class="suggestion-name">${colName}</div><div class="suggestion-type">${s.type}</div>
-        ${s.currentComment ? `<div class="suggestion-current">Current: ${s.currentComment}</div>` : `<div class="suggestion-current"><em>No current description</em></div>`}
-        <div class="suggestion-ai"><textarea id="text-${colName}" onchange="markEdited('${colName}')">${s.current}</textarea></div>
-        <div class="suggestion-actions">
-          <button class="btn btn-sm btn-success" onclick="setStatus('${colName}', 'approved')">&#10003;</button>
-          <button class="btn btn-sm btn-outline" onclick="setStatus('${colName}', 'rejected')">&#10007;</button>
-          <button class="btn btn-sm btn-outline" onclick="resetSuggestion('${colName}')">&#8634;</button>
-          <span class="status-label ${s.status !== 'pending' ? 'status-' + s.status : ''}" id="status-${colName}">${s.status !== 'pending' ? s.status.toUpperCase() : ''}</span>
-        </div></div>`;
-    }
-    html += '</div>';
+  for (const colName of colKeys) {
+    const s = suggestions[colName];
+    html += `<div class="suggestion-row ${s.status}" id="suggestion-${colName}">
+      <div class="suggestion-label">Column</div>
+      <div class="suggestion-name">${colName}</div><div class="suggestion-type">${s.type}</div>
+      ${s.currentComment ? `<div class="suggestion-current">Current: ${s.currentComment}</div>` : `<div class="suggestion-current"><em>No current description</em></div>`}
+      <div class="suggestion-ai"><textarea id="text-${colName}" onchange="markEdited('${colName}')">${s.current}</textarea></div>
+      <div class="suggestion-actions">
+        <button class="btn btn-sm btn-success" onclick="setStatus('${colName}', 'approved')">&#10003;</button>
+        <button class="btn btn-sm btn-outline" onclick="setStatus('${colName}', 'rejected')">&#10007;</button>
+        <button class="btn btn-sm btn-outline" onclick="resetSuggestion('${colName}')">&#8634;</button>
+        <button class="btn btn-sm btn-outline" id="regen-btn-${colName}" onclick="regenerateSingleBrowse('${colName}')" title="Regenerate">&#8635; Regen</button>
+        <span class="status-label ${s.status !== 'pending' ? 'status-' + s.status : ''}" id="status-${colName}">${s.status !== 'pending' ? s.status.toUpperCase() : ''}</span>
+      </div></div>`;
   }
+
+  html += '</div>';
 
   const approved = Object.values(suggestions).filter(s => s.status === 'approved' || s.status === 'edited').length;
   const rejected = Object.values(suggestions).filter(s => s.status === 'rejected').length;
@@ -673,8 +765,9 @@ function markEdited(key) {
 }
 
 function resetSuggestion(key) { suggestions[key].current = suggestions[key].original; suggestions[key].status = 'pending'; renderTableView(); }
-function approveAll() { for (const k of Object.keys(suggestions)) { if (k === '__table__') continue; const ta = document.getElementById(`text-${k}`); if (ta) suggestions[k].current = ta.value; if (suggestions[k].status !== 'rejected') suggestions[k].status = 'approved'; } renderTableView(); }
-function rejectAll() { for (const k of Object.keys(suggestions)) { if (k === '__table__') continue; suggestions[k].status = 'rejected'; } renderTableView(); }
+function resetAll() { for (const k of Object.keys(suggestions)) { suggestions[k].current = suggestions[k].original; suggestions[k].status = 'pending'; } renderTableView(); }
+function approveAll() { for (const k of Object.keys(suggestions)) { const ta = document.getElementById(`text-${k}`); if (ta) suggestions[k].current = ta.value; if (suggestions[k].status !== 'rejected') suggestions[k].status = 'approved'; } renderTableView(); }
+function rejectAll() { for (const k of Object.keys(suggestions)) { suggestions[k].status = 'rejected'; } renderTableView(); }
 
 async function applyApproved() {
   const btn = document.getElementById('apply-btn');
@@ -771,40 +864,49 @@ async function runBatchGenerate() {
   try {
     const data = await apiFetch(`${API}/generate/batch`, {
       method: 'POST',
-      body: JSON.stringify({ catalog_name: cat, schema_name: schema }),
+      body: JSON.stringify({ catalog_name: cat, schema_name: schema, rules_override: sessionRules }),
     });
 
     document.getElementById('batch-progress').style.display = 'none';
     batchResults = data.results;
 
-    let html = `<div style="margin-bottom:16px; font-size:14px;">
+    let html = `<div style="margin-bottom:12px; font-size:14px;">
       <strong>${data.tables_processed}</strong> tables processed
       ${data.tables_failed > 0 ? `, <span style="color:var(--red)">${data.tables_failed} failed</span>` : ''}
+    </div>
+    <div style="margin-bottom:16px; display:flex; gap:8px; align-items:center;">
+      <button class="btn btn-sm" onclick="expandAll()" style="font-size:12px;">&#8595; Expand All</button>
+      <button id="batch-apply-all-btn" class="btn btn-sm btn-success" onclick="applyAllTables()" style="font-size:12px;">&#10003; Apply All Tables</button>
     </div>`;
 
-    for (const r of data.results) {
+    for (const [idx, r] of data.results.entries()) {
       const colCount = Object.keys(r.suggestions.column_descriptions || {}).length;
-      html += `<div class="batch-table-card">
-        <div class="batch-table-header" onclick="this.nextElementSibling.style.display = this.nextElementSibling.style.display === 'none' ? 'block' : 'none'">
+      const colEntries = Object.entries(r.suggestions.column_descriptions || {});
+      html += `<div class="batch-table-card" id="batch-card-${idx}">
+        <div class="batch-table-header" onclick="toggleCard(${idx})">
           <span>&#128203; ${r.table_name} <span style="color:var(--text-dim); font-weight:400;">(${colCount} columns)</span></span>
-          <span style="font-size:12px; color:var(--text-dim);">Click to expand</span>
+          <span id="batch-card-hint-${idx}" style="font-size:12px; color:var(--text-dim);">Click to expand</span>
         </div>
-        <div class="batch-table-body" style="display:none;">
-          <div style="margin-bottom:8px;"><strong>Table:</strong> ${r.suggestions.table_description || '(none)'}</div>
+        <div id="batch-body-${idx}" class="batch-table-body" style="display:none;">
+          <div style="margin-bottom:8px; display:flex; align-items:center; gap:8px;">
+            <span><strong>Table:</strong> <span id="batch-table-desc-${idx}">${r.suggestions.table_description || '(none)'}</span></span>
+            <button class="btn btn-sm btn-outline" onclick="regenerateBatchTable('${r.full_name}', ${idx}, this)" title="Regenerate table description" style="font-size:11px; padding:2px 6px;">&#8635;</button>
+          </div>
           <table style="width:100%; font-size:12px; border-collapse:collapse;">
             <tr style="border-bottom:1px solid var(--border);"><th style="padding:4px;">Column</th><th style="padding:4px;">AI Description</th><th style="padding:4px;">Action</th></tr>
-            ${Object.entries(r.suggestions.column_descriptions || {}).map(([col, desc]) => `
+            ${colEntries.map(([col, desc], colIdx) => `
               <tr style="border-bottom:1px solid var(--border);">
                 <td style="padding:4px; font-family:monospace;">${col}</td>
-                <td style="padding:4px;">${desc}</td>
-                <td style="padding:4px;">
-                  <button class="btn btn-sm btn-success" onclick="batchApplySingle('${r.full_name}', '${col}', this)" data-desc="${desc.replace(/"/g, '&quot;')}">Apply</button>
+                <td style="padding:4px;" id="batch-col-desc-${idx}-${colIdx}">${desc}</td>
+                <td style="padding:4px; white-space:nowrap;">
+                  <button id="batch-col-btn-${idx}-${colIdx}" class="btn btn-sm btn-success" onclick="batchApplySingle('${r.full_name}', '${col}', ${idx}, this)" data-desc="${(desc || '').replace(/"/g, '&quot;')}">Apply</button>
+                  <button class="btn btn-sm btn-outline" id="batch-col-regen-${idx}-${colIdx}" onclick="regenerateBatchCol('${r.full_name}', '${col}', ${idx}, ${colIdx}, this)" title="Regenerate" style="font-size:11px; padding:2px 6px;">&#8635;</button>
                 </td>
               </tr>
             `).join('')}
           </table>
           <div style="margin-top:12px;">
-            <button class="btn btn-sm btn-success" onclick="batchApplyTable('${r.full_name}', ${data.results.indexOf(r)})">&#10003; Apply All for ${r.table_name}</button>
+            <button id="batch-apply-btn-${idx}" class="btn btn-sm btn-success" onclick="batchApplyTable('${r.full_name}', ${idx}, this)">&#10003; Apply All for ${r.table_name}</button>
           </div>
         </div>
       </div>`;
@@ -821,47 +923,242 @@ async function runBatchGenerate() {
   btn.innerHTML = '&#9889; Generate for All Tables';
 }
 
-async function batchApplyTable(fullName, idx) {
-  const r = batchResults[idx];
-  try {
-    const colComments = r.suggestions.column_descriptions || {};
-    await apiFetch(`${API}/apply/batch`, {
-      method: 'POST',
-      body: JSON.stringify({
-        full_name: fullName,
-        table_comment: r.suggestions.table_description,
-        column_comments: colComments,
-        ai_table_suggestion: r.suggestions.table_description,
-        ai_column_suggestions: colComments,
-      }),
-    });
-    showToast(`Applied all descriptions for ${r.table_name}`);
-  } catch (e) {
-    showToast(`Failed: ${e.message}`, true);
+function toggleCard(idx) {
+  const body = document.getElementById(`batch-body-${idx}`);
+  const hint = document.getElementById(`batch-card-hint-${idx}`);
+  const expanded = body.style.display !== 'none';
+  body.style.display = expanded ? 'none' : 'block';
+  hint.textContent = expanded ? 'Click to expand' : 'Click to collapse';
+}
+
+function expandAll() {
+  for (let i = 0; i < batchResults.length; i++) {
+    const body = document.getElementById(`batch-body-${i}`);
+    const hint = document.getElementById(`batch-card-hint-${i}`);
+    if (body) { body.style.display = 'block'; hint.textContent = 'Click to collapse'; }
   }
 }
 
-async function batchApplySingle(fullName, colName, btn) {
+async function applyAllTables() {
+  const allBtn = document.getElementById('batch-apply-all-btn');
+  allBtn.disabled = true;
+  allBtn.textContent = 'Applying...';
+  for (let i = 0; i < batchResults.length; i++) {
+    const r = batchResults[i];
+    const tableBtn = document.getElementById(`batch-apply-btn-${i}`);
+    if (tableBtn && !tableBtn.disabled) {
+      await batchApplyTable(r.full_name, i, tableBtn);
+    }
+  }
+  allBtn.textContent = '\u2713 All Applied';
+  allBtn.style.opacity = '0.6';
+}
+
+async function batchApplyTable(fullName, idx, btn) {
+  const r = batchResults[idx];
+  btn.disabled = true;
+  btn.textContent = 'Applying...';
+
+  // Show applying state on all column buttons for this table
+  const colEntries = Object.entries(r.suggestions.column_descriptions || {});
+  for (let colIdx = 0; colIdx < colEntries.length; colIdx++) {
+    const colBtn = document.getElementById(`batch-col-btn-${idx}-${colIdx}`);
+    if (colBtn && !colBtn.disabled) {
+      colBtn.disabled = true;
+      colBtn.textContent = '...';
+    }
+  }
+
+  try {
+    // Filter out null/empty descriptions before sending
+    const rawCols = r.suggestions.column_descriptions || {};
+    const colComments = Object.fromEntries(Object.entries(rawCols).filter(([, v]) => v));
+    const data = await apiFetch(`${API}/apply/batch`, {
+      method: 'POST',
+      body: JSON.stringify({
+        full_name: fullName,
+        table_comment: r.suggestions.table_description || null,
+        column_comments: colComments,
+        ai_table_suggestion: r.suggestions.table_description || null,
+        ai_column_suggestions: colComments,
+      }),
+    });
+    const res = data.results;
+    const ok = [res.table, ...Object.values(res.columns || {})].filter(s => s === 'success').length;
+    const fail = (res.errors || []).length;
+    showToast(`Applied ${ok} descriptions for ${r.table_name}${fail > 0 ? `, ${fail} failed` : ''}`, fail > 0);
+    btn.textContent = '\u2713 Applied';
+    btn.style.opacity = '0.6';
+
+    // Mark all column buttons as applied
+    for (let colIdx = 0; colIdx < colEntries.length; colIdx++) {
+      const colBtn = document.getElementById(`batch-col-btn-${idx}-${colIdx}`);
+      if (colBtn) { colBtn.textContent = 'Applied'; colBtn.style.opacity = '0.5'; }
+    }
+    checkAllTablesApplied();
+  } catch (e) {
+    showToast(`Failed: ${e.message}`, true);
+    btn.disabled = false;
+    btn.textContent = '\u2713 Apply All for ' + r.table_name;
+
+    // Re-enable column buttons on failure
+    for (let colIdx = 0; colIdx < colEntries.length; colIdx++) {
+      const colBtn = document.getElementById(`batch-col-btn-${idx}-${colIdx}`);
+      if (colBtn && colBtn.textContent === '...') {
+        colBtn.disabled = false;
+        colBtn.textContent = 'Apply';
+      }
+    }
+  }
+}
+
+function checkTableApplied(idx) {
+  const r = batchResults[idx];
+  const colCount = Object.keys(r.suggestions.column_descriptions || {}).length;
+  if (colCount === 0) return;
+  for (let colIdx = 0; colIdx < colCount; colIdx++) {
+    const colBtn = document.getElementById(`batch-col-btn-${idx}-${colIdx}`);
+    if (!colBtn || colBtn.textContent !== 'Applied') return;
+  }
+  // All column buttons are applied — mark the per-table button too
+  const tableBtn = document.getElementById(`batch-apply-btn-${idx}`);
+  if (tableBtn && !tableBtn.disabled) {
+    tableBtn.disabled = true;
+    tableBtn.textContent = '\u2713 Applied';
+    tableBtn.style.opacity = '0.6';
+    checkAllTablesApplied();
+  }
+}
+
+function checkAllTablesApplied() {
+  const allBtn = document.getElementById('batch-apply-all-btn');
+  if (!allBtn || allBtn.disabled) return;
+  for (let i = 0; i < batchResults.length; i++) {
+    const tableBtn = document.getElementById(`batch-apply-btn-${i}`);
+    if (!tableBtn || !tableBtn.disabled) return;
+  }
+  allBtn.disabled = true;
+  allBtn.textContent = '\u2713 All Applied';
+  allBtn.style.opacity = '0.6';
+}
+
+async function batchApplySingle(fullName, colName, idx, btn) {
   const desc = btn.getAttribute('data-desc');
+  btn.disabled = true;
+  btn.textContent = '...';
   try {
     await apiFetch(`${API}/apply/column`, {
       method: 'POST',
       body: JSON.stringify({ full_name: fullName, column_name: colName, comment: desc }),
     });
     btn.textContent = 'Applied';
-    btn.disabled = true;
     btn.style.opacity = '0.5';
+    checkTableApplied(idx);
   } catch (e) {
     showToast(`Failed: ${e.message}`, true);
+    btn.disabled = false;
+    btn.textContent = 'Apply';
   }
+}
+
+// ── Per-item Regeneration ───────────────────────────────────
+
+async function regenerateSingleBrowse(key) {
+  const btn = document.getElementById(`regen-btn-${key}`);
+  const ta = document.getElementById(`text-${key}`);
+  if (btn) { btn.disabled = true; btn.textContent = '...'; }
+  try {
+    const itemName = key === '__table__' ? null : key;
+    const data = await apiFetch(`${API}/generate/item`, {
+      method: 'POST',
+      body: JSON.stringify({ full_name: currentTable.full_name, item_name: itemName, rules_override: sessionRules }),
+    });
+    suggestions[key].original = data.description;
+    suggestions[key].current = data.description;
+    suggestions[key].status = 'pending';
+    renderTableView();
+  } catch (e) {
+    showToast(`Regeneration failed: ${e.message}`, true);
+    if (btn) { btn.disabled = false; btn.textContent = '↺ Regen'; }
+  }
+}
+
+async function regenerateBatchCol(fullName, colName, idx, colIdx, btn) {
+  btn.disabled = true;
+  btn.textContent = '...';
+  try {
+    const data = await apiFetch(`${API}/generate/item`, {
+      method: 'POST',
+      body: JSON.stringify({ full_name: fullName, item_name: colName, rules_override: sessionRules }),
+    });
+    const newDesc = data.description;
+    batchResults[idx].suggestions.column_descriptions[colName] = newDesc;
+    const cell = document.getElementById(`batch-col-desc-${idx}-${colIdx}`);
+    if (cell) cell.textContent = newDesc;
+    const applyBtn = document.getElementById(`batch-col-btn-${idx}-${colIdx}`);
+    if (applyBtn) {
+      applyBtn.setAttribute('data-desc', newDesc);
+      applyBtn.disabled = false;
+      applyBtn.textContent = 'Apply';
+      applyBtn.style.opacity = '';
+    }
+  } catch (e) {
+    showToast(`Regeneration failed: ${e.message}`, true);
+  }
+  btn.disabled = false;
+  btn.textContent = '↺';
+}
+
+async function regenerateBatchTable(fullName, idx, btn) {
+  btn.disabled = true;
+  btn.textContent = '...';
+  try {
+    const data = await apiFetch(`${API}/generate/item`, {
+      method: 'POST',
+      body: JSON.stringify({ full_name: fullName, item_name: null, rules_override: sessionRules }),
+    });
+    batchResults[idx].suggestions.table_description = data.description;
+    const el = document.getElementById(`batch-table-desc-${idx}`);
+    if (el) el.textContent = data.description;
+  } catch (e) {
+    showToast(`Regeneration failed: ${e.message}`, true);
+  }
+  btn.disabled = false;
+  btn.textContent = '↺';
 }
 
 // ── Custom Rules ───────────────────────────────────────────
 async function loadRules() {
   try {
     const data = await apiFetch(`${API}/rules`);
-    document.getElementById('custom-rules').value = data.rules || '';
+    orgRules = data.rules || '';
   } catch (e) {}
+  renderRulesTabContent();
+}
+
+function renderRulesTabContent() {
+  const effectiveTa = document.getElementById('custom-rules');
+  const badge = document.getElementById('rules-effective-badge');
+  const desc = document.getElementById('rules-effective-desc');
+  const orgSection = document.getElementById('rules-org-section');
+  const orgTa = document.getElementById('org-rules-display');
+  if (!effectiveTa) return;  // tab not in DOM yet
+
+  const isCustom = sessionRules !== null;
+  effectiveTa.value = isCustom ? sessionRules : orgRules;
+
+  if (isCustom) {
+    badge.textContent = 'Session override active';
+    badge.style.cssText = 'font-size:11px; font-weight:600; padding:2px 8px; border:1px solid var(--orange); border-radius:3px; color:var(--orange);';
+    desc.textContent = 'Your session override rules are in effect — active for this browser session only, not saved. The system defaults are shown below for reference.';
+    orgSection.style.display = '';
+    orgTa.value = orgRules;
+  } else {
+    badge.textContent = 'System default (config.yaml)';
+    badge.style.cssText = 'font-size:11px; color:var(--text-dim);';
+    desc.textContent = 'These rules are injected into the AI system prompt before every generation request. They apply to all users and all generation modes.';
+    orgSection.style.display = 'none';
+  }
 }
 
 
@@ -936,6 +1233,9 @@ function showToast(msg, isError = false) {
 
 // ── Init ───────────────────────────────────────────────────
 loadCatalogs();
+renderSessionRulesPanel('browse');
+renderSessionRulesPanel('batch');
+renderSessionRulesPanel('rules');
 </script>
 </body>
 </html>

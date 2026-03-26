@@ -124,6 +124,18 @@ databricks api patch /api/2.0/apps/uc-ai-descriptions --profile <your-profile> -
 
 ### Step 6: Grant Service Principal Permissions
 
+> **Important — Shared Identity Model**
+>
+> This app runs all Unity Catalog operations (browsing, reading metadata, and applying descriptions) under a **single shared service principal**, not under each end user's individual identity. This means:
+>
+> - **What users can see** in the app is determined by what the SP has been granted access to — not by the individual user's own UC permissions.
+> - **Descriptions are applied to Unity Catalog by the SP**, not by the logged-in user. From UC's perspective, every change was made by the SP.
+> - **The audit log** records the approver as `"app_user"` for all users. It tracks *that* a change was made and reviewed, but does not capture *which* user approved it.
+>
+> **Implication for operators:** Grant the SP access only to catalogs and schemas you want all app users to be able to browse and modify descriptions on. The SP's access defines the app's scope — it acts as a shared service account on behalf of all users.
+>
+> Per-user identity tracking (passing the logged-in user's OAuth token through to UC) is a planned future improvement.
+
 Find the SP application ID:
 ```bash
 databricks apps get uc-ai-descriptions -p <your-profile> | grep service_principal_client_id
@@ -131,13 +143,13 @@ databricks apps get uc-ai-descriptions -p <your-profile> | grep service_principa
 
 Grant Unity Catalog permissions (run in SQL or notebook):
 ```sql
--- Replace <sp-id> with the SP's UUID
+-- Replace <sp-id> with the SP's UUID from the command above
 -- Permissions on data catalogs/schemas the app will describe
 GRANT USE CATALOG ON CATALOG <catalog> TO `<sp-id>`;
 GRANT USE SCHEMA ON SCHEMA <catalog>.<schema> TO `<sp-id>`;
 GRANT SELECT, MODIFY ON SCHEMA <catalog>.<schema> TO `<sp-id>`;
 
--- Permissions on the centralized audit table (append-only)
+-- Permissions on the centralized audit table
 GRANT USE CATALOG ON CATALOG governance TO `<sp-id>`;
 GRANT USE SCHEMA ON SCHEMA governance.ai_descriptions TO `<sp-id>`;
 GRANT CREATE TABLE ON SCHEMA governance.ai_descriptions TO `<sp-id>`;
@@ -155,6 +167,32 @@ databricks apps deploy uc-ai-descriptions \
 # Check status
 databricks apps get uc-ai-descriptions -p <your-profile>
 ```
+
+### Startup Audit Validation
+
+Every time the app starts, it automatically validates and bootstraps the audit table configured in `config.yaml`. The startup check:
+
+1. **Validates** the `audit.table` setting is a valid `catalog.schema.table` name
+2. **Checks** the catalog is accessible to the service principal
+3. **Creates the schema** if it doesn't exist (requires `CREATE SCHEMA` privilege on the catalog)
+4. **Creates the audit table** if it doesn't exist (requires `CREATE TABLE` + `MODIFY` on the schema)
+
+**If audit setup fails**, the app continues running but audit logging will be disabled. Look for `ERROR server.audit:` lines in the app logs:
+
+```
+https://uc-ai-descriptions-<workspace-id>.azure.databricksapps.com/logz
+# or
+databricks apps logs uc-ai-descriptions --tail-lines 50 -p <your-profile>
+```
+
+Common error patterns and fixes:
+
+| Error | Fix |
+|-------|-----|
+| `cannot access catalog '<catalog>'` | `GRANT USE CATALOG ON CATALOG <catalog> TO '<sp-id>';` |
+| `schema '...' does not exist and could not be created` | `GRANT CREATE SCHEMA ON CATALOG <catalog> TO '<sp-id>';` |
+| `could not create table '...'` | `GRANT CREATE TABLE ON SCHEMA <schema> TO '<sp-id>'; GRANT MODIFY ON SCHEMA <schema> TO '<sp-id>';` |
+| `not a valid 3-part name` | Fix `audit.table` in `config.yaml` — must be `catalog.schema.table` |
 
 ---
 
@@ -216,11 +254,12 @@ Every approved or edited description is logged to a centralized Delta table (con
 ![Audit Log](screenshots/04-audit-log.png)
 
 **Audit entries track:**
-- Who approved the description
-- When it was applied
+- When the description was applied
 - What the AI originally suggested
 - What was actually applied (may differ if edited)
 - Whether it was approved as-is or edited
+
+> **Note:** The audit log records `applied_by` as `"app_user"` for all entries — individual user identity is not captured in the current version (see the shared identity model note in Step 5). The audit trail is useful for tracking *what changed and when*, but not *which user* made the change.
 
 Click **"Refresh Audit Log"** to load entries from the centralized audit table.
 

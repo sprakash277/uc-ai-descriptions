@@ -1,13 +1,26 @@
 """UC AI Descriptions — Databricks App entry point."""
 
+import logging
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 import os
 
+logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+
 from server.config import app_config
 
-app = FastAPI(title=app_config.app_title)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Run startup validation on app boot."""
+    from server.audit import validate_audit_setup
+    validate_audit_setup()
+    yield
+
+
+app = FastAPI(title=app_config.app_title, lifespan=lifespan)
 
 from server.routes import router
 app.include_router(router)

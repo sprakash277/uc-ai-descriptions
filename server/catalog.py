@@ -3,9 +3,11 @@
 import logging
 from typing import Any
 
-from .config import app_config, get_workspace_client
+from databricks.sdk.service.catalog import ColumnInfo
+
+from .config import get_workspace_client, app_config
 from .warehouse import resolve_warehouse_id
-from .sql_utils import escape_comment
+from .sql_utils import validate_identifier, quote_identifier, escape_comment
 
 logger = logging.getLogger(__name__)
 
@@ -71,11 +73,13 @@ def get_table_details(full_name: str) -> dict[str, Any]:
 def apply_table_comment(full_name: str, comment: str) -> bool:
     """Apply a comment to a table using SQL."""
     from databricks.sdk.service.sql import StatementState
+
+    validate_identifier(full_name)
     w = get_workspace_client()
     warehouse_id = resolve_warehouse_id()
 
     escaped = escape_comment(comment)
-    sql = f"COMMENT ON TABLE {full_name} IS '{escaped}'"
+    sql = f"COMMENT ON TABLE {quote_identifier(full_name)} IS '{escaped}'"
 
     resp = w.statement_execution.execute_statement(
         warehouse_id=warehouse_id,
@@ -88,11 +92,14 @@ def apply_table_comment(full_name: str, comment: str) -> bool:
 def apply_column_comment(full_name: str, column_name: str, comment: str) -> bool:
     """Apply a comment to a column using SQL."""
     from databricks.sdk.service.sql import StatementState
+
+    validate_identifier(full_name)
     w = get_workspace_client()
     warehouse_id = resolve_warehouse_id()
 
     escaped = escape_comment(comment)
-    sql = f"ALTER TABLE {full_name} ALTER COLUMN `{column_name}` COMMENT '{escaped}'"
+    col_quoted = column_name.replace("`", "``")
+    sql = f"ALTER TABLE {quote_identifier(full_name)} ALTER COLUMN `{col_quoted}` COMMENT '{escaped}'"
 
     resp = w.statement_execution.execute_statement(
         warehouse_id=warehouse_id,

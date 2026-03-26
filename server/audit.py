@@ -1,24 +1,28 @@
-"""Audit logging — write description approvals to a centralized Delta table."""
+"""Audit logging — write description approvals to a Delta table."""
 
 import logging
 from typing import Optional
 
-from .config import app_config, get_workspace_client
+from .config import get_workspace_client, app_config
 from .warehouse import resolve_warehouse_id
-from .sql_utils import escape_comment
+from .sql_utils import quote_identifier
 
 logger = logging.getLogger(__name__)
 
 
+def _audit_table_quoted() -> str:
+    """Return the backtick-quoted audit table path from config."""
+    return quote_identifier(app_config.audit_table)
+
+
 def ensure_audit_table() -> bool:
-    """Create the centralized audit table if it doesn't exist."""
+    """Create the audit table if it doesn't exist."""
     from databricks.sdk.service.sql import StatementState
     w = get_workspace_client()
     wh_id = resolve_warehouse_id()
-    table_path = app_config.audit_table
 
     sql = f"""
-    CREATE TABLE IF NOT EXISTS {table_path} (
+    CREATE TABLE IF NOT EXISTS {_audit_table_quoted()} (
         full_table_name STRING,
         item_type STRING COMMENT 'TABLE or COLUMN',
         item_name STRING,
@@ -48,32 +52,31 @@ def log_action(
     action: str,
     applied_by: str = "app_user",
 ) -> bool:
-    """Log a single description action to the centralized audit table."""
-    from databricks.sdk.service.sql import StatementState
+    """Log a single description action to the audit table."""
+    from databricks.sdk.service.sql import StatementState, StatementParameterListItem
     w = get_workspace_client()
     wh_id = resolve_warehouse_id()
-    table_path = app_config.audit_table
-
-    esc = escape_comment
 
     sql = f"""
-    INSERT INTO {table_path}
-    VALUES (
-        '{esc(full_table_name)}',
-        '{esc(item_type)}',
-        '{esc(item_name)}',
-        '{esc(previous_description)}',
-        '{esc(ai_suggested_description)}',
-        '{esc(final_description)}',
-        '{esc(action)}',
-        '{esc(applied_by)}',
-        current_timestamp()
-    )
+    INSERT INTO {_audit_table_quoted()}
+    VALUES (:full_table_name, :item_type, :item_name, :previous,
+            :ai_suggested, :final, :action, :applied_by, current_timestamp())
     """
+
+    params = [
+        StatementParameterListItem(name="full_table_name", value=full_table_name),
+        StatementParameterListItem(name="item_type", value=item_type),
+        StatementParameterListItem(name="item_name", value=item_name),
+        StatementParameterListItem(name="previous", value=previous_description),
+        StatementParameterListItem(name="ai_suggested", value=ai_suggested_description),
+        StatementParameterListItem(name="final", value=final_description),
+        StatementParameterListItem(name="action", value=action),
+        StatementParameterListItem(name="applied_by", value=applied_by),
+    ]
 
     try:
         resp = w.statement_execution.execute_statement(
-            warehouse_id=wh_id, statement=sql, wait_timeout="50s"
+            warehouse_id=wh_id, statement=sql, parameters=params, wait_timeout="50s"
         )
         return resp.status and resp.status.state == StatementState.SUCCEEDED
     except Exception as e:
@@ -104,30 +107,119 @@ def log_batch(
     return success_count
 
 
-def get_audit_log(
-    full_table_name: Optional[str] = None,
-    limit: int = 50,
-) -> list[dict]:
-    """Retrieve recent audit log entries from the centralized audit table."""
-    from databricks.sdk.service.sql import StatementState
+def validate_audit_setup() -> bool:
+    """Validate and bootstrap the audit table at app startup.
+
+    Checks that the configured catalog and schema are accessible, creates them
+    if possible, then ensures the audit table exists. Logs actionable ERROR
+    messages with recommended SQL grants when setup is incomplete.
+
+    Returns True if audit logging is fully operational, False if degraded.
+    """
+    table = app_config.audit_table
+    parts = table.split(".")
+    if len(parts) != 3:
+        logger.error(
+            "Audit table '%s' is not a valid 3-part name (catalog.schema.table). "
+            "Fix 'audit.table' in config.yaml and redeploy.",
+            table,
+        )
+        return False
+
+    catalog_name, schema_name, _ = parts
+    full_schema = f"{catalog_name}.{schema_name}"
+
+    w = get_workspace_client()
+
+    # 1. Verify catalog access
+    try:
+        w.catalogs.get(catalog_name)
+        logger.info("Audit: catalog '%s' is accessible.", catalog_name)
+    except Exception as e:
+        logger.error(
+            "Audit setup failed: cannot access catalog '%s' (%s). "
+            "Grant the app's service principal access:\n"
+            "  GRANT USE CATALOG ON CATALOG %s TO `<sp-application-id>`;\n"
+            "Find the SP ID with: databricks apps get uc-ai-descriptions | grep service_principal_client_id",
+            catalog_name, e, catalog_name,
+        )
+        return False
+
+    # 2. Verify or create schema
+    schema_exists = False
+    try:
+        w.schemas.get(full_schema)
+        schema_exists = True
+        logger.info("Audit: schema '%s' is accessible.", full_schema)
+    except Exception:
+        pass
+
+    if not schema_exists:
+        logger.info("Audit: schema '%s' not found — attempting to create.", full_schema)
+        try:
+            w.schemas.create(name=schema_name, catalog_name=catalog_name)
+            logger.info("Audit: schema '%s' created successfully.", full_schema)
+        except Exception as create_err:
+            logger.error(
+                "Audit setup failed: schema '%s' does not exist and could not be created (%s). "
+                "Either create it manually or grant CREATE SCHEMA to the service principal:\n"
+                "  GRANT USE CATALOG ON CATALOG %s TO `<sp-application-id>`;\n"
+                "  GRANT CREATE SCHEMA ON CATALOG %s TO `<sp-application-id>`;\n"
+                "Or create the schema manually: CREATE SCHEMA IF NOT EXISTS %s;",
+                full_schema, create_err, catalog_name, catalog_name, full_schema,
+            )
+            return False
+
+    # 3. Ensure audit table exists (CREATE IF NOT EXISTS)
+    try:
+        ok = ensure_audit_table()
+        if ok:
+            logger.info("Audit: table '%s' is ready.", table)
+            return True
+        else:
+            logger.error(
+                "Audit setup: table creation returned a non-success status for '%s'. "
+                "Ensure the service principal has CREATE TABLE and MODIFY on the schema:\n"
+                "  GRANT CREATE TABLE ON SCHEMA %s TO `<sp-application-id>`;\n"
+                "  GRANT MODIFY ON SCHEMA %s TO `<sp-application-id>`;",
+                table, full_schema, full_schema,
+            )
+            return False
+    except Exception as e:
+        logger.error(
+            "Audit setup failed: could not create table '%s' (%s). "
+            "Grant the service principal:\n"
+            "  GRANT CREATE TABLE ON SCHEMA %s TO `<sp-application-id>`;\n"
+            "  GRANT MODIFY ON SCHEMA %s TO `<sp-application-id>`;",
+            table, e, full_schema, full_schema,
+        )
+        return False
+
+
+def get_audit_log(full_table_name: Optional[str] = None, limit: int = 50) -> list[dict]:
+    """Retrieve recent audit log entries."""
+    from databricks.sdk.service.sql import StatementState, StatementParameterListItem
     w = get_workspace_client()
     wh_id = resolve_warehouse_id()
-    table_path = app_config.audit_table
-
-    where = ""
-    if full_table_name:
-        where = f"WHERE full_table_name = '{escape_comment(full_table_name)}'"
 
     sql = f"""
-    SELECT * FROM {table_path}
-    {where}
+    SELECT * FROM {_audit_table_quoted()}
+    """
+
+    if full_table_name:
+        sql += " WHERE full_table_name = :table_filter"
+        params = [StatementParameterListItem(name="table_filter", value=full_table_name)]
+    else:
+        params = None
+
+    sql += f"""
     ORDER BY applied_at DESC
     LIMIT {limit}
     """
 
     try:
         resp = w.statement_execution.execute_statement(
-            warehouse_id=wh_id, statement=sql, wait_timeout="50s"
+            warehouse_id=wh_id, statement=sql, parameters=params, wait_timeout="50s"
         )
         if not resp.result or not resp.result.data_array:
             return []
