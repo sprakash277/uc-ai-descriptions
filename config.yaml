@@ -12,3 +12,14 @@ exclusions:
     - "system"
   schemas:
     - "information_schema"
+
+# Per-schema reference docs (opt-in).
+# When volume_name is set, the app looks for reference docs in
+# /Volumes/<catalog>/<schema>/<volume_name>/ for every generate call.
+# PDFs are parsed via ai_parse_document; .md/.txt read natively.
+# Governance: the schema owner grants READ VOLUME on their own Volume
+# to the app service principal.
+reference:
+  volume_name: "reference_docs"
+  per_doc_max_chars: 8000
+  total_max_chars: 40000

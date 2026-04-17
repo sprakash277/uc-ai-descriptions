@@ -33,6 +33,11 @@ class AppConfig:
         default_factory=lambda: ["information_schema"]
     )
 
+    # Reference docs (per-schema UC Volume). Opt-in: empty volume_name disables the feature.
+    reference_volume_name: str = ""
+    reference_per_doc_max_chars: int = 8000
+    reference_total_max_chars: int = 40000
+
 
 def load_config(config_path: str = "") -> AppConfig:
     """Load config from YAML file + environment variables.
@@ -62,6 +67,14 @@ def load_config(config_path: str = "") -> AppConfig:
                     cfg.excluded_catalogs = exc["catalogs"]
                 if "schemas" in exc:
                     cfg.excluded_schemas = exc["schemas"]
+            if "reference" in data and isinstance(data["reference"], dict):
+                ref = data["reference"]
+                if "volume_name" in ref:
+                    cfg.reference_volume_name = str(ref["volume_name"] or "").strip()
+                if "per_doc_max_chars" in ref:
+                    cfg.reference_per_doc_max_chars = int(ref["per_doc_max_chars"])
+                if "total_max_chars" in ref:
+                    cfg.reference_total_max_chars = int(ref["total_max_chars"])
         except Exception as e:
             logger.warning("Failed to load config.yaml: %s — using defaults", e)
 

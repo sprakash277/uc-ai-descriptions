@@ -264,6 +264,91 @@
     font-size: 11px; font-weight: 600; padding: 1px 6px; border-radius: 3px;
     border: 1px solid var(--orange); color: var(--orange); margin-left: 8px;
   }
+
+  /* ── Reference-docs toggle + sources disclosure ──────────────── */
+  .reference-bar {
+    padding: 8px 24px; background: var(--surface); border-bottom: 1px solid var(--border);
+    font-size: 13px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  }
+  .reference-bar .ref-label { color: var(--text-dim); display: flex; align-items: center; gap: 6px; }
+  .reference-bar .ref-count { color: var(--text); font-weight: 600; }
+  .reference-bar .ref-count.none { color: var(--text-dim); font-weight: normal; }
+
+  .toggle-switch {
+    position: relative; display: inline-block; width: 36px; height: 20px;
+    vertical-align: middle;
+  }
+  .toggle-switch input { opacity: 0; width: 0; height: 0; }
+  .toggle-slider {
+    position: absolute; cursor: pointer; inset: 0; background: var(--border);
+    border-radius: 20px; transition: background 0.15s;
+  }
+  .toggle-slider::before {
+    content: ""; position: absolute; height: 14px; width: 14px; left: 3px; top: 3px;
+    background: white; border-radius: 50%; transition: transform 0.15s;
+  }
+  .toggle-switch input:checked + .toggle-slider { background: var(--accent); }
+  .toggle-switch input:checked + .toggle-slider::before { transform: translateX(16px); }
+  .toggle-switch input:disabled + .toggle-slider { opacity: 0.4; cursor: not-allowed; }
+
+  .sources-disclosure {
+    margin-top: 8px; padding: 8px 10px; background: var(--bg);
+    border: 1px solid var(--border); border-radius: 4px; font-size: 12px;
+  }
+  .sources-summary {
+    cursor: pointer; user-select: none; color: var(--accent); display: flex;
+    align-items: center; gap: 6px; list-style: none;
+  }
+  .sources-summary::-webkit-details-marker { display: none; }
+  .sources-summary::before { content: "▶"; font-size: 10px; transition: transform 0.15s; }
+  .sources-disclosure[open] .sources-summary::before { transform: rotate(90deg); }
+  .sources-list { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+  .source-item {
+    padding: 6px 8px; background: var(--surface2); border-radius: 4px;
+    border-left: 2px solid var(--accent);
+  }
+  .source-item .source-filename {
+    font-family: monospace; font-size: 11px; color: var(--text); font-weight: 600;
+    margin-bottom: 3px;
+  }
+  .source-item .source-snippet {
+    font-size: 11px; color: var(--text-dim); line-height: 1.5;
+  }
+
+  /* ── Reference docs panel (collapsible) ──────────────────────── */
+  .ref-panel {
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+    margin-bottom: 16px; overflow: hidden;
+  }
+  .ref-panel-header {
+    padding: 10px 14px; cursor: pointer; display: flex; justify-content: space-between;
+    align-items: center; font-size: 13px; user-select: none;
+  }
+  .ref-panel-header:hover { background: var(--surface2); }
+  .ref-panel-body { padding: 10px 14px 14px; border-top: 1px solid var(--border); }
+  .ref-panel-path {
+    font-family: monospace; font-size: 11px; color: var(--text-dim); margin-bottom: 8px;
+    word-break: break-all;
+  }
+  .ref-file-row {
+    display: flex; align-items: center; gap: 8px; padding: 4px 0;
+    border-bottom: 1px solid var(--border); font-size: 12px;
+  }
+  .ref-file-row:last-child { border-bottom: none; }
+  .ref-file-row .status-icon { font-size: 14px; width: 16px; text-align: center; }
+  .ref-file-row .status-icon.parsed { color: var(--green); }
+  .ref-file-row .status-icon.parsed_with_warnings { color: var(--yellow); }
+  .ref-file-row .status-icon.failed { color: var(--red); }
+  .ref-file-row .status-icon.pending { color: var(--text-dim); }
+  .ref-file-row .ref-filename {
+    font-family: monospace; font-size: 11px; color: var(--text);
+    flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .ref-file-row .ref-meta { color: var(--text-dim); font-size: 11px; }
+  .ref-panel-footer {
+    margin-top: 10px; display: flex; justify-content: space-between; align-items: center;
+    font-size: 11px; color: var(--text-dim);
+  }
 </style>
 </head>
 <body>
@@ -284,6 +369,7 @@
 <!-- ═══ TAB: Browse & Generate ═══════════════════════════════════════ -->
 <div id="tab-browse" class="tab-content">
   <div id="session-rules-browse" class="session-rules-bar"></div>
+  <div id="reference-bar-browse" class="reference-bar"></div>
   <div class="layout">
     <div class="sidebar">
       <h2>Catalog Browser</h2>
@@ -302,6 +388,7 @@
 <!-- ═══ TAB: Batch Schema ════════════════════════════════════════════ -->
 <div id="tab-batch" class="tab-content" style="display:none;">
   <div id="session-rules-batch" class="session-rules-bar"></div>
+  <div id="reference-bar-batch" class="reference-bar"></div>
   <div class="full-panel">
     <div class="section">
       <div class="section-title">&#9889; Batch Generate Descriptions for Entire Schema</div>
@@ -454,6 +541,17 @@ let batchResults = [];
 let sessionRules = null;      // null = use org rules; string = active override
 let sessionRulesOpen = false; // whether the panel is expanded
 let orgRules = '';            // org rules loaded from /api/rules (cached)
+
+// ── Reference docs state ────────────────────────────────────
+// Per-session toggle for reference-doc retrieval — the A/B demo lever.
+// When false, generate calls skip the Volume lookup and the LLM sees no docs.
+let useReference = true;
+// Latest status payload keyed by "<catalog>.<schema>" — {volume_path, files, total_char_count, ...}
+const referenceStatusCache = {};
+// Whether the Reference Documentation panel in the main view is expanded.
+let referencePanelOpen = false;
+// Currently selected schema ("catalog.schema") — drives the reference bar + panel.
+let currentSchemaKey = null;
 
 async function ensureOrgRules() {
   if (!orgRules) {
