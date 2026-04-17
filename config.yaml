@@ -12,3 +12,10 @@ exclusions:
     - "system"
   schemas:
     - "information_schema"
+
+# Opt-in reference-doc RAG. Leave volume_path empty to disable (default behaviour).
+# When set, the app reads .md/.txt/.pdf files from the Volume, BM25-indexes them
+# in memory, and splices the top_k relevant chunks into the generate prompt.
+reference:
+  volume_path: "/Volumes/main/default/uc_ai_reference_docs"
+  top_k: 3

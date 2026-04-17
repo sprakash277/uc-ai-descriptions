@@ -33,6 +33,10 @@ class AppConfig:
         default_factory=lambda: ["information_schema"]
     )
 
+    # Reference-doc RAG (opt-in) — see config.yaml `reference:` block
+    reference_volume_path: str = ""
+    reference_top_k: int = 3
+
 
 def load_config(config_path: str = "") -> AppConfig:
     """Load config from YAML file + environment variables.
@@ -62,6 +66,11 @@ def load_config(config_path: str = "") -> AppConfig:
                     cfg.excluded_catalogs = exc["catalogs"]
                 if "schemas" in exc:
                     cfg.excluded_schemas = exc["schemas"]
+            if "reference" in data and isinstance(data["reference"], dict):
+                ref = data["reference"]
+                cfg.reference_volume_path = str(ref.get("volume_path", "") or "").strip()
+                if ref.get("top_k") is not None:
+                    cfg.reference_top_k = int(ref["top_k"])
         except Exception as e:
             logger.warning("Failed to load config.yaml: %s — using defaults", e)
 

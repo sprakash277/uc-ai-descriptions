@@ -46,16 +46,23 @@ def generate_descriptions(
     table_info: dict,
     model: str | None = None,
     rules_override: str | None = None,
+    reference_context: list[dict] | None = None,
 ) -> dict:
     """Generate AI descriptions for a table and all its columns.
+
+    Parameters
+    ----------
+    reference_context: Optional list of ``{"text", "source", "score"}`` chunks
+        retrieved from the reference-docs BM25 index. When provided, the chunks
+        are spliced into the user prompt so the model can use them to inform
+        descriptions. The sources are echoed back in the returned dict under
+        the ``sources`` key.
 
     Returns:
         {
             "table_description": "...",
-            "column_descriptions": {
-                "col_name": "suggested description",
-                ...
-            }
+            "column_descriptions": {"col_name": "suggested description", ...},
+            "sources": [{"source", "snippet"}, ...]  # only when reference_context provided
         }
     """
     model = model or app_config.serving_endpoint
@@ -67,7 +74,23 @@ def generate_descriptions(
         for c in table_info["columns"]
     )
 
-    user_prompt = f"""Generate descriptions for this Unity Catalog table and its columns.
+    context_block = ""
+    if reference_context:
+        parts = []
+        for ref in reference_context:
+            source = ref.get("source", "unknown")
+            text = (ref.get("text") or "").strip()
+            if text:
+                parts.append(f"[Source: {source}]\n{text}")
+        if parts:
+            context_block = (
+                "Reference documentation (use to inform descriptions; ignore irrelevant parts):\n"
+                "---\n"
+                + "\n---\n".join(parts)
+                + "\n---\n\n"
+            )
+
+    user_prompt = f"""{context_block}Generate descriptions for this Unity Catalog table and its columns.
 
 Table: {table_info['full_name']}
 Type: {table_info['table_type']}
@@ -103,7 +126,13 @@ Return JSON in this exact format:
         if content.endswith("```"):
             content = content[:-3].strip()
 
-    return json.loads(content)
+    result = json.loads(content)
+    if reference_context:
+        result["sources"] = [
+            {"source": r.get("source", ""), "snippet": (r.get("text") or "")[:200]}
+            for r in reference_context
+        ]
+    return result
 
 
 def generate_notebook_code(

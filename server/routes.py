@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 from databricks.sdk.errors import PermissionDenied
 
-from . import catalog, ai_gen, audit
+from . import catalog, ai_gen, audit, reference
 from .config import app_config, get_workspace_client, get_user_workspace_client
 from .identity import get_current_user, get_user_token
 
@@ -85,18 +85,37 @@ class GenerateRequest(BaseModel):
     rules_override: Optional[str] = None  # Per-session rules; None = use org rules from config.yaml
 
 
+def _retrieve_reference_chunks(table_info: dict) -> list[dict]:
+    """Retrieve top-k reference chunks if the reference service is enabled; else []."""
+    svc = reference.get_reference_service()
+    if svc is None:
+        return []
+    try:
+        return svc.retrieve(table_info, top_k=app_config.reference_top_k)
+    except Exception as e:
+        logger.warning("Reference retrieval failed: %s", e)
+        return []
+
+
 @router.post("/generate")
 async def generate_descriptions(req: GenerateRequest, w=Depends(get_request_client)):
     """Generate AI descriptions for a table and its columns."""
     try:
         table_info = catalog.get_table_details(req.full_name, w=w)
-        suggestions = ai_gen.generate_descriptions(table_info, model=req.model, rules_override=req.rules_override)
+        ref_chunks = _retrieve_reference_chunks(table_info)
+        suggestions = ai_gen.generate_descriptions(
+            table_info,
+            model=req.model,
+            rules_override=req.rules_override,
+            reference_context=ref_chunks,
+        )
         return {
             "status": "success",
             "table_full_name": req.full_name,
             "current_table_comment": table_info["comment"],
             "suggestions": suggestions,
             "columns": table_info["columns"],
+            "sources": suggestions.get("sources", []),
         }
     except PermissionDenied as e:
         raise HTTPException(status_code=403, detail=str(e))
@@ -119,12 +138,18 @@ async def generate_item_description(req: GenerateItemRequest, w=Depends(get_requ
     """Re-generate AI description for a single table or column (using full table context)."""
     try:
         table_info = catalog.get_table_details(req.full_name, w=w)
-        suggestions = ai_gen.generate_descriptions(table_info, model=req.model, rules_override=req.rules_override)
+        ref_chunks = _retrieve_reference_chunks(table_info)
+        suggestions = ai_gen.generate_descriptions(
+            table_info,
+            model=req.model,
+            rules_override=req.rules_override,
+            reference_context=ref_chunks,
+        )
         if req.item_name is None:
             description = suggestions["table_description"]
         else:
             description = suggestions["column_descriptions"].get(req.item_name, "")
-        return {"status": "success", "description": description}
+        return {"status": "success", "description": description, "sources": suggestions.get("sources", [])}
     except PermissionDenied as e:
         raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
@@ -155,13 +180,20 @@ async def batch_generate_descriptions(req: BatchGenerateRequest, w=Depends(get_r
                 continue
             try:
                 table_info = catalog.get_table_details(t["full_name"], w=w)
-                suggestions = ai_gen.generate_descriptions(table_info, model=req.model, rules_override=req.rules_override)
+                ref_chunks = _retrieve_reference_chunks(table_info)
+                suggestions = ai_gen.generate_descriptions(
+                    table_info,
+                    model=req.model,
+                    rules_override=req.rules_override,
+                    reference_context=ref_chunks,
+                )
                 results.append({
                     "full_name": t["full_name"],
                     "table_name": t["name"],
                     "current_comment": table_info["comment"],
                     "suggestions": suggestions,
                     "columns": table_info["columns"],
+                    "sources": suggestions.get("sources", []),
                 })
             except Exception as e:
                 errors.append({"table": t["full_name"], "error": str(e)})
