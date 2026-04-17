@@ -7,6 +7,7 @@ generate handlers behave exactly as before.
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 from typing import Optional
@@ -14,6 +15,13 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 _SUPPORTED_EXTS = (".pdf", ".md", ".txt")
+_TOKEN_RE = re.compile(r"[A-Za-z0-9]+")
+
+
+def _tokenize(text: str) -> list[str]:
+    """Lowercase word tokeniser. Splits on any non-alphanumeric so `order_id` and
+    `main.default.loyalty_transactions_demo` both decompose into meaningful words."""
+    return [t for t in _TOKEN_RE.findall(text.lower()) if t]
 
 
 class ReferenceService:
@@ -151,7 +159,7 @@ class ReferenceService:
             self._built_at = time.time()
             return
 
-        tokenized = [c["text"].lower().split() for c in chunks]
+        tokenized = [_tokenize(c["text"]) for c in chunks]
         self._chunks = chunks
         self._bm25 = BM25Okapi(tokenized)
         self._file_sigs = {f["path"]: f"{f['size']}-{f['mtime']}" for f in files}
@@ -178,7 +186,7 @@ class ReferenceService:
             query = f"{table_info.get('full_name', '')} " + " ".join(
                 c.get("name", "") for c in table_info.get("columns", [])
             )
-            tokens = query.lower().split()
+            tokens = _tokenize(query)
             if not tokens:
                 return []
             scores = self._bm25.get_scores(tokens)
