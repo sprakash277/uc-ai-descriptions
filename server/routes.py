@@ -463,17 +463,21 @@ def _reference_disabled_response(catalog_name: str, schema_name: str) -> dict:
 
 
 @router.get("/reference/status")
-async def reference_status(catalog: str, schema: str):
+async def reference_status(catalog: str, schema: str, preview: bool = False):
     """Report parse status for every reference doc in ``<catalog>.<schema>``.
 
     Drives the "Reference Documentation" panel in the UI. Safe to call
     repeatedly — uses the in-memory cache, so cheap when nothing changed.
+
+    ``preview=true`` skips the actual parse and returns whatever is in cache
+    with uncached files marked ``pending``. The UI uses this to render a
+    "Parsing N PDFs…" indicator, then follows up with a real call.
     """
     try:
         svc = _get_reference_service()
         if not svc:
             return _reference_disabled_response(catalog, schema)
-        data = svc.get_status(catalog, schema, force_refresh=False)
+        data = svc.get_status(catalog, schema, force_refresh=False, preview=preview)
         data["enabled"] = True
         return data
     except Exception as e:

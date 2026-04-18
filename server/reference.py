@@ -224,12 +224,17 @@ class ReferenceService:
 
     # ── Internal cache refresh ──────────────────────────────────────────
 
-    def _refresh_schema(self, catalog: str, schema: str, force: bool = False) -> tuple[str, list[dict[str, Any]]]:
+    def _refresh_schema(self, catalog: str, schema: str, force: bool = False, preview: bool = False) -> tuple[str, list[dict[str, Any]]]:
         """Ensure the cache is up to date for `<catalog>.<schema>`.
 
         Returns ``(volume_path, files_with_status)`` — one entry per file
         present in the Volume (whether or not parsing succeeded). Callers
         hold ``self._lock``.
+
+        ``preview=True`` skips the parse step entirely — just lists files
+        and reports cache state. Uncached files show ``status = "pending"``.
+        Used by the UI to render a "Parsing N PDFs…" indicator before the
+        slow parse call that follows.
         """
         vpath = self._volume_path(catalog, schema)
         files = self._list_volume(vpath)
@@ -255,7 +260,14 @@ class ReferenceService:
                 needs_parse_text.append(f["path"])
 
         n_parse = len(needs_parse_pdf) + len(needs_parse_text)
-        if n_parse:
+
+        # Preview mode: skip the expensive parsing. The UI will follow up
+        # with a real status call immediately after rendering its indicator.
+        if preview:
+            needs_parse_pdf = []
+            needs_parse_text = []
+
+        if n_parse and not preview:
             logger.info(
                 "Parsing %d file(s) from reference volume %s (cached: %d)",
                 n_parse, vpath, len(files) - n_parse,
@@ -369,7 +381,7 @@ class ReferenceService:
             return combined, sources
 
     def get_status(
-        self, catalog: str, schema: str, force_refresh: bool = False
+        self, catalog: str, schema: str, force_refresh: bool = False, preview: bool = False
     ) -> dict[str, Any]:
         """Return the reference-doc panel data for ``<catalog>.<schema>``.
 
@@ -392,7 +404,7 @@ class ReferenceService:
         ``force_refresh=True`` re-parses every file (ignores mtime cache).
         """
         with self._lock:
-            vpath, status_files = self._refresh_schema(catalog, schema, force=force_refresh)
+            vpath, status_files = self._refresh_schema(catalog, schema, force=force_refresh, preview=preview)
             total_chars = sum(f["char_count"] for f in status_files)
             if total_chars > self.total_max:
                 total_chars = self.total_max

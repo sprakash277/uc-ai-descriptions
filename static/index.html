@@ -644,6 +644,11 @@ function renderReferenceBar() {
     if (status) {
       if (!status.enabled) {
         countLabel = '<span class="ref-count none">feature disabled</span>';
+      } else if (status._parsing && status._parsing.total > 0) {
+        const n = status._parsing.total;
+        const pdfs = status._parsing.pdfs;
+        const what = pdfs > 0 ? `${pdfs} PDF${pdfs === 1 ? '' : 's'}` : `${n} file${n === 1 ? '' : 's'}`;
+        countLabel = `<span class="ref-count" style="color:var(--yellow);"><div class="spinner" style="display:inline-block; width:10px; height:10px; border-width:2px; vertical-align:-1px; margin-right:4px;"></div>Parsing ${what} (first time only, ~30s)…</span>`;
       } else if (status.files && status.files.length > 0) {
         const parsed = status.files.filter(f => f.status === 'parsed' || f.status === 'parsed_with_warnings').length;
         const failed = status.files.filter(f => f.status === 'failed').length;
@@ -698,15 +703,33 @@ async function loadReferenceStatus(catalogName, schemaName, force = false) {
   const key = `${catalogName}.${schemaName}`;
   currentSchemaKey = key;
   renderReferenceBar();
+  const base = `${API}/reference/status?catalog=${encodeURIComponent(catalogName)}&schema=${encodeURIComponent(schemaName)}`;
   try {
-    const url = force
-      ? `${API}/reference/refresh`
-      : `${API}/reference/status?catalog=${encodeURIComponent(catalogName)}&schema=${encodeURIComponent(schemaName)}`;
-    const opts = force
-      ? { method: 'POST', body: JSON.stringify({ catalog: catalogName, schema_name: schemaName }) }
-      : {};
-    const data = await apiFetch(url, opts);
-    referenceStatusCache[key] = data;
+    if (force) {
+      const data = await apiFetch(`${API}/reference/refresh`, {
+        method: 'POST',
+        body: JSON.stringify({ catalog: catalogName, schema_name: schemaName }),
+      });
+      referenceStatusCache[key] = data;
+    } else {
+      // Phase 1: cheap preview (file list + cache state, no parsing).
+      const preview = await apiFetch(`${base}&preview=true`);
+      const pendingPdfs = (preview.files || []).filter(f => f.status === 'pending' && f.ext === 'pdf').length;
+      const pendingText = (preview.files || []).filter(f => f.status === 'pending' && f.ext !== 'pdf').length;
+      const pendingTotal = pendingPdfs + pendingText;
+
+      if (pendingTotal > 0 && key === currentSchemaKey) {
+        // Show "Parsing N PDFs…" while the real parse runs.
+        referenceStatusCache[key] = { ...preview, _parsing: { pdfs: pendingPdfs, total: pendingTotal } };
+        renderReferenceBar();
+        renderReferencePanel();
+        // Phase 2: real call, triggers ai_parse_document. Blocks ~10-30s per PDF.
+        const data = await apiFetch(base);
+        if (key === currentSchemaKey) referenceStatusCache[key] = data;
+      } else {
+        referenceStatusCache[key] = preview;
+      }
+    }
   } catch (e) {
     referenceStatusCache[key] = { enabled: false, files: [], volume_path: '',
       volume_name: '', total_char_count: 0, total_char_budget: 0, error: e.message };
@@ -732,6 +755,8 @@ function referencePanelHtml() {
   let headerRight = '';
   if (!status.enabled) {
     headerRight = '<span style="font-size:11px; color:var(--text-dim);">feature disabled</span>';
+  } else if (status._parsing && status._parsing.total > 0) {
+    headerRight = `<span style="font-size:11px; color:var(--yellow);">parsing ${status._parsing.total} file${status._parsing.total === 1 ? '' : 's'}…</span>`;
   } else if (fileCount === 0) {
     headerRight = '<span style="font-size:11px; color:var(--text-dim);">no docs</span>';
   } else {
