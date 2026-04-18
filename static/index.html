@@ -640,6 +640,7 @@ function renderReferenceBar() {
 
     const status = referenceStatusCache[currentSchemaKey];
     let countLabel = '<span class="ref-count none">loading...</span>';
+    let emptyHint = '';
     if (status) {
       if (!status.enabled) {
         countLabel = '<span class="ref-count none">feature disabled</span>';
@@ -650,6 +651,17 @@ function renderReferenceBar() {
         if (failed > 0) countLabel += ` <span style="color:var(--red); font-size:11px;">(${failed} failed)</span>`;
       } else {
         countLabel = '<span class="ref-count none">no docs in Volume</span>';
+        if (status.volume_path) {
+          const vp = status.volume_path;
+          const copyJs = `navigator.clipboard.writeText('${vp}'); this.style.outline='1px solid var(--green)'; setTimeout(()=>{this.style.outline=''}, 800);`;
+          emptyHint = `
+            <div style="margin-top:4px; font-size:11px; color:var(--text-dim); line-height:1.5;">
+              Upload PDFs or .md/.txt files to
+              <code style="background:var(--bg); padding:1px 5px; border-radius:3px; font-size:11px; cursor:pointer;" title="Click to copy" onclick="${copyJs}">${vp}</code>
+              <span style="color:var(--text-dim); font-style:italic;">— Catalog UI → Upload, or</span>
+              <code style="background:var(--bg); padding:1px 5px; border-radius:3px; font-size:11px;">databricks fs cp ./mydoc.pdf dbfs:${vp}/</code>
+            </div>`;
+        }
       }
     }
 
@@ -657,6 +669,7 @@ function renderReferenceBar() {
     el.innerHTML = `
       <div class="ref-label">&#128218; ${countLabel}
         <span style="color:var(--text-dim); font-size:11px;">for ${schemaLabel}</span>
+        ${emptyHint}
       </div>
       <span style="color:var(--text-dim); font-size:12px;">Use when generating:</span>
       <label class="toggle-switch" title="Toggle to regenerate with/without reference docs">
