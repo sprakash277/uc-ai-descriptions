@@ -83,6 +83,23 @@ Two-layer git-controlled configuration:
 
 ## End-to-End Code Flow
 
+Follow these steps in order — each has been validated end-to-end from a clean workspace. Total time: ~20 minutes for the first deploy.
+
+### Step 0: Prerequisites
+
+Before you start, make sure you have:
+
+- **Databricks workspace** with a serverless SQL warehouse you can use (note its `<warehouse-id>`)
+- **Databricks CLI** ≥ `v0.230` installed locally
+- **A user account with one of:**
+  - `account admin` (recommended — makes OBO + all grants trivial), or
+  - `workspace admin` + permission to grant UC privileges on the catalogs you'll browse
+- **One UC catalog and schema** you own that will hold the audit log (e.g., `main.default`). Needs `CREATE SCHEMA` + `CREATE TABLE` rights.
+- **At least one "data" catalog** you want the app to describe tables in. The SP will need `USE CATALOG` + `USE SCHEMA` + `SELECT` + `MODIFY` on this.
+- **(Optional) A UC Volume per schema** for reference docs — can be added after initial deploy.
+
+> If you don't know whether OBO (On-Behalf-Of) is enabled in your workspace, that's fine — the app degrades to a shared-SP identity when it's off. See Step 3.
+
 ### Step 1: Clone and Configure
 
 ```bash
@@ -90,7 +107,8 @@ git clone https://github.com/sprakash277/uc-ai-descriptions.git
 cd uc-ai-descriptions
 ```
 
-**Edit `config.yaml`** to customize Responsible AI rules, audit table, and exclusions:
+**Edit `config.yaml`** and set `audit.table` to a `catalog.schema.table` path you own. The catalog + schema must already exist (or the SP must have `CREATE SCHEMA` on the catalog — see Step 6).
+
 ```yaml
 responsible_ai_rules: |
   - Never include PII field names or example values in descriptions.
@@ -98,7 +116,9 @@ responsible_ai_rules: |
   - Do not reference internal system names or implementation details.
 
 audit:
-  table: "governance.ai_descriptions.audit_log"
+  # Change this to a real catalog.schema you own (the table name can be anything new).
+  # Examples: "main.default.uc_ai_descriptions_audit_log", "governance.metadata.ai_audit"
+  table: "main.default.uc_ai_descriptions_audit_log"
 
 exclusions:
   catalogs:
@@ -106,42 +126,69 @@ exclusions:
     - "system"
   schemas:
     - "information_schema"
+
+reference:
+  # Leave empty ("") to disable the per-schema reference docs feature globally.
+  # Otherwise, the app looks in /Volumes/<catalog>/<schema>/<volume_name>/ for .pdf/.md/.txt.
+  volume_name: "reference_docs"
 ```
+
+> **If `audit.table` points at a catalog that doesn't exist, the app still starts** but logs `ERROR server.audit: cannot access catalog '<name>'` and audit writes are silently disabled. Fix it by either pointing at a real catalog or granting the SP permissions (Step 6).
 
 ### Step 2: Authenticate with Databricks CLI
 
 ```bash
 databricks auth login --host https://<your-workspace-url> --profile <your-profile>
-databricks auth profiles | grep <your-profile>
+databricks auth profiles | grep <your-profile>   # should show "YES" in the Valid column
 ```
 
-### Step 3: Enable OBO (Workspace Admin, One-Time)
+Replace `<your-profile>` with a short name (e.g., `mycorp-dev`) — you'll use it on every subsequent command.
 
-Per-user UC permissions require On-Behalf-Of (OBO) authorization:
+### Step 3: Enable OBO (Optional — Workspace Admin, One-Time)
 
-1. Go to your workspace **Settings > Previews**
-2. Enable **"On-Behalf-Of User Authorization"** (or "Databricks Apps user token passthrough")
+OBO (On-Behalf-Of) lets the app act as the logged-in user for UC browse/apply, so users can only see/modify tables they have UC grants on. Without OBO, the app uses the shared service principal for everything.
 
-> **Note:** If OBO is not enabled, the app still works — it falls back to the shared SP identity for all operations.
+1. Workspace **Settings → Previews**
+2. Enable **"On-Behalf-Of User Authorization"** (may also be labeled "Databricks Apps user token passthrough")
+
+If you can't turn this on (feature-flag locked for your org, or you're not an admin): **skip this step and skip Step 5 below.** The app works fine — everything just runs as the SP.
+
+Confirm by running any API call; if OBO is disabled, the `user_api_scopes` patch in Step 5 returns:
+```
+Error: Databricks Apps - user token passthrough feature is not enabled for organization <id>
+```
 
 ### Step 4: Deploy the Bundle
 
+Deploy is a three-step sequence. **After the bundle deploy, the app is created but compute is STOPPED — you must start it before running `apps deploy` or deploy will fail with `compute unavailable`.**
+
 ```bash
-# Validate the bundle configuration
-databricks bundle validate --profile <your-profile>
+# 4a. Validate the bundle config
+databricks bundle validate -p <your-profile>
 
-# Deploy (uploads files + creates/updates app resource)
-databricks bundle deploy --profile <your-profile>
+# 4b. Create the app resource (compute starts as STOPPED on first deploy)
+databricks bundle deploy -p <your-profile>
 
-# Deploy the app runtime
+# 4c. Start the app compute — required before deploy on a fresh install.
+#     Compute startup takes 2–4 minutes.
+databricks apps start uc-ai-descriptions -p <your-profile>
+
+# 4d. Deploy the app source code to running compute
 databricks apps deploy uc-ai-descriptions \
   --source-code-path /Workspace/Users/<your-email>/.bundle/uc-ai-descriptions/dev/files \
   -p <your-profile>
 ```
 
-### Step 5: Set OBO Scopes
+Capture the app's service principal ID — you'll need it in Step 5 + 6:
 
-After the app is created, set the `user_api_scopes` via API:
+```bash
+databricks apps get uc-ai-descriptions -p <your-profile> | grep service_principal_client_id
+# e.g., "service_principal_client_id": "6a96c754-a7aa-4683-bc14-106bf6fe543f"
+```
+
+### Step 5: Set OBO Scopes (Skip if you skipped Step 3)
+
+If OBO is enabled, tell the app which user scopes to request. Only `sql` is needed today:
 
 ```bash
 databricks api patch /api/2.0/apps/uc-ai-descriptions -p <your-profile> --json '{
@@ -149,49 +196,65 @@ databricks api patch /api/2.0/apps/uc-ai-descriptions -p <your-profile> --json '
 }'
 ```
 
-> **Note:** The Terraform provider currently has a bug with `user_api_scopes` in `databricks.yml`, so this must be set via the REST API after app creation.
+> The Terraform/bundle provider has a known bug setting `user_api_scopes` from `databricks.yml`, so this has to be a post-create API patch. If this command returns `user token passthrough feature is not enabled`, OBO is off in your workspace — skip this step, the app runs as SP.
 
-### Step 6: Grant Service Principal Permissions
+### Step 6: Grant Permissions
 
-The SP still needs base permissions for audit logging and as a fallback when OBO is not available.
+The SP needs UC and warehouse grants to function. Run each of the below for **every catalog** you want browseable, plus the audit catalog and the warehouse.
 
-Find the SP application ID:
-```bash
-databricks apps get uc-ai-descriptions -p <your-profile> | grep service_principal_client_id
-```
+**6.1 Unity Catalog grants for each data catalog** (run in SQL editor or a notebook — replace `<sp-id>` and `<catalog>`):
 
-Grant Unity Catalog permissions (run in SQL or notebook):
 ```sql
--- Replace <sp-id> with the SP's UUID from the command above
-
--- Permissions on data catalogs/schemas the app will describe
+-- For each catalog the app should browse / generate / apply to:
 GRANT USE CATALOG ON CATALOG <catalog> TO `<sp-id>`;
-GRANT USE SCHEMA ON CATALOG <catalog> TO `<sp-id>`;
-GRANT SELECT ON CATALOG <catalog> TO `<sp-id>`;
-GRANT MODIFY ON CATALOG <catalog> TO `<sp-id>`;
-
--- Permissions on the audit table catalog/schema
-GRANT USE CATALOG ON CATALOG <audit-catalog> TO `<sp-id>`;
-GRANT USE SCHEMA ON SCHEMA <audit-catalog>.<audit-schema> TO `<sp-id>`;
-GRANT CREATE SCHEMA ON CATALOG <audit-catalog> TO `<sp-id>`;
-GRANT CREATE TABLE ON SCHEMA <audit-catalog>.<audit-schema> TO `<sp-id>`;
-GRANT MODIFY ON SCHEMA <audit-catalog>.<audit-schema> TO `<sp-id>`;
+GRANT USE SCHEMA  ON CATALOG <catalog> TO `<sp-id>`;
+GRANT SELECT      ON CATALOG <catalog> TO `<sp-id>`;
+GRANT MODIFY      ON CATALOG <catalog> TO `<sp-id>`;
 ```
+
+Repeat for **each** catalog you named in Step 0 (your data catalogs + `samples` if you want the demo tree).
+
+**6.2 Audit table grants** (for the catalog.schema you put in `config.yaml → audit.table`):
+
+```sql
+GRANT USE CATALOG    ON CATALOG <audit-catalog>                     TO `<sp-id>`;
+GRANT USE SCHEMA     ON SCHEMA  <audit-catalog>.<audit-schema>      TO `<sp-id>`;
+GRANT CREATE SCHEMA  ON CATALOG <audit-catalog>                     TO `<sp-id>`;
+GRANT CREATE TABLE   ON SCHEMA  <audit-catalog>.<audit-schema>      TO `<sp-id>`;
+GRANT MODIFY         ON SCHEMA  <audit-catalog>.<audit-schema>      TO `<sp-id>`;
+```
+
+The app creates the audit table on first startup if it doesn't exist.
+
+**6.3 SQL warehouse `CAN_USE`** for the SP **and** every user who will open the app (browse and `information_schema` queries flow through this warehouse):
+
+```bash
+databricks api patch /api/2.0/permissions/warehouses/<warehouse-id> -p <your-profile> --json '{
+  "access_control_list": [
+    {"service_principal_name": "<sp-id>",          "permission_level": "CAN_USE"},
+    {"user_name":              "user@company.com", "permission_level": "CAN_USE"}
+  ]
+}'
+```
+
+Add more `user_name` entries (or a `group_name`) as needed. Without this, the catalog-tree load returns a warehouse-permission error for those users.
 
 ### Step 6a: Configure Reference Documentation (Optional)
 
 The app can use customer-provided reference docs (data dictionaries, glossaries, runbooks) as context for the AI when generating descriptions. Docs live in a UC Volume per schema so **governance is UC-native** — schema owners control their own Volume, no central corpus.
 
-**Convention:** for `<catalog>.<schema>.<table>`, the app looks at `/Volumes/<catalog>/<schema>/<volume_name>/` where `volume_name` is configured in `config.yaml` (default `reference_docs`). If the Volume doesn't exist or the SP lacks `READ VOLUME`, the app silently skips reference context for that schema.
+**Convention:** for `<catalog>.<schema>.<table>`, the app looks at `/Volumes/<catalog>/<schema>/<volume_name>/` where `volume_name` comes from `config.yaml` (default `reference_docs`). If the Volume doesn't exist or the SP lacks access, the app silently skips reference context for that schema.
 
-**Per schema you want to enable:**
+**Per schema you want to enable** (note: `USE CATALOG` + `USE SCHEMA` are required in addition to `READ VOLUME` — they may already be granted from Step 6.1 if this is a data catalog):
 
 ```sql
--- Create the Volume (managed volume is simplest)
+-- Create the Volume (managed is simplest)
 CREATE VOLUME IF NOT EXISTS <catalog>.<schema>.reference_docs;
 
--- Grant the app SP read access
-GRANT READ VOLUME ON VOLUME <catalog>.<schema>.reference_docs TO `<sp-id>`;
+-- Grant the SP access (all three are required)
+GRANT USE CATALOG ON CATALOG <catalog>                              TO `<sp-id>`;
+GRANT USE SCHEMA  ON SCHEMA  <catalog>.<schema>                     TO `<sp-id>`;
+GRANT READ VOLUME ON VOLUME  <catalog>.<schema>.reference_docs      TO `<sp-id>`;
 ```
 
 Then drop reference docs into the Volume via UI (Catalog → Volumes → Upload) or:
@@ -203,33 +266,30 @@ databricks fs cp ./glossary.md         dbfs:/Volumes/<cat>/<sch>/reference_docs/
 
 **Supported formats:** `.pdf` (parsed via `ai_parse_document` — includes OCR + table extraction), `.md`, `.txt`. Other formats are skipped with a warning log.
 
-**Cost note:** `ai_parse_document` is per-page billed. PDFs are parsed once per `(path, mtime)` and cached in memory, so subsequent generates on the same schema reuse cached markdown until a file changes. Re-parse happens automatically when the Volume's mtimes change or when a user clicks **Refresh** in the reference docs panel.
-
-**Config:** set `reference.volume_name: "reference_docs"` in `config.yaml` (already set to this default). Leave empty to disable the feature globally.
+**Cost note:** `ai_parse_document` is per-page billed. PDFs are parsed once per `(path, mtime)` and cached in memory, so subsequent generates on the same schema reuse cached markdown until a file changes. Re-parse happens automatically when the Volume's mtimes change or when a user clicks **Refresh** in the reference docs panel. First schema expand with new PDFs shows a **"Parsing N PDFs (first time only, ~30s)…"** indicator.
 
 ### Step 7: Verify Deployment
 
-**Important — start the app before the first deploy.** `databricks apps create` usually starts compute automatically, but if it was ever stopped you must start it (via UI → Compute → Apps → `uc-ai-descriptions` → Start, or CLI `databricks apps start uc-ai-descriptions -p <your-profile>`) **before** running `databricks apps deploy` — otherwise deploy fails with a compute-unavailable error. Compute startup takes 2–4 minutes.
-
 ```bash
-# Check status — should show RUNNING with user_api_scopes: ['sql']
-databricks apps get uc-ai-descriptions -p <your-profile>
+# App state — should show RUNNING. user_api_scopes shows ['sql'] if Step 5 ran, else None.
+databricks apps get uc-ai-descriptions -p <your-profile> \
+  | grep -E 'state|user_api_scopes|url|service_principal_client_id'
+
+# Tail the logs — look for "Application startup complete" and no ERROR lines.
+databricks apps logs uc-ai-descriptions --tail-lines 50 -p <your-profile>
 ```
 
-**Also grant `CAN_USE` on the SQL warehouse to the app SP AND every OBO user** (or a group that covers them). Without this, the browse tree and all `information_schema` queries fail with a warehouse-permission error. Example CLI (replace IDs and usernames):
+Then open the app URL in your browser:
 
-```bash
-databricks api patch /api/2.0/permissions/warehouses/<warehouse-id> -p <your-profile> --json '{
-  "access_control_list": [
-    {"service_principal_name": "<sp-application-id>", "permission_level": "CAN_USE"},
-    {"user_name": "user@company.com", "permission_level": "CAN_USE"}
-  ]
-}'
-```
+1. **First open** — if OBO is on, Databricks shows a one-time authorization prompt. Accept it.
+2. **Catalog tree** on the left should populate within a few seconds.
+3. Click a catalog → schema → table → **Generate AI Descriptions**. A successful run proves the full chain (FMAPI + warehouse + SP/OBO).
+4. **Apply to Metastore** — writes to UC. Check the catalog UI to confirm the comment landed.
+5. Open **Tab 5 — Audit Log** — you should see one entry per applied description with `applied_by = your email`.
 
-When a user opens the app for the first time, Databricks will prompt them to **authorize** the app (one-time per app version). After authorization, all browse and apply operations run under their own UC identity.
+> **Troubleshooting — blank screen or auth loop on first load:** after a fresh deploy or after toggling OBO ↔ SP modes, the browser may hold stale auth state. Clear cache or open in incognito to force a fresh handshake.
 
-> **Troubleshooting — blank screens or stuck auth state on first load:** on the initial load after deployment, or after toggling OBO ↔ SP authentication modes, the browser may hold stale auth state. Clear the browser cache or open the app in an incognito window to force a fresh handshake.
+> **Troubleshooting — "could not access warehouse" in the browse tree:** Step 6.3 wasn't applied, or was applied to a different warehouse than the one in `databricks.yml → variables.warehouse_id`.
 
 ### Startup Audit Validation
 

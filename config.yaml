@@ -4,7 +4,12 @@ responsible_ai_rules: |
   - Do not reference internal system names or implementation details.
 
 audit:
-  table: "governance.ai_descriptions.audit_log"
+  # IMPORTANT: change this to a catalog.schema you own before deploying.
+  # The SP needs USE CATALOG + CREATE SCHEMA + CREATE TABLE + MODIFY on the
+  # catalog/schema — see README Step 6.2. If these grants are missing, the
+  # app still starts but audit writes are disabled (see "ERROR server.audit"
+  # in the app logs).
+  table: "main.default.uc_ai_descriptions_audit_log"
 
 exclusions:
   catalogs:
