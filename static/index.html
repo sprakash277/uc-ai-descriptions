@@ -369,6 +369,7 @@
 <!-- ═══ TAB: Browse & Generate ═══════════════════════════════════════ -->
 <div id="tab-browse" class="tab-content">
   <div id="session-rules-browse" class="session-rules-bar"></div>
+  <div id="session-prompt-browse" class="session-rules-bar"></div>
   <div id="reference-bar-browse" class="reference-bar"></div>
   <div class="layout">
     <div class="sidebar">
@@ -388,6 +389,7 @@
 <!-- ═══ TAB: Batch Schema ════════════════════════════════════════════ -->
 <div id="tab-batch" class="tab-content" style="display:none;">
   <div id="session-rules-batch" class="session-rules-bar"></div>
+  <div id="session-prompt-batch" class="session-rules-bar"></div>
   <div id="reference-bar-batch" class="reference-bar"></div>
   <div class="full-panel">
     <div class="section">
@@ -427,6 +429,7 @@
 <!-- ═══ TAB: Responsible AI Rules ════════════════════════════════════ -->
 <div id="tab-rules" class="tab-content" style="display:none;">
   <div id="session-rules-rules" class="session-rules-bar"></div>
+  <div id="session-prompt-rules" class="session-rules-bar"></div>
   <div class="full-panel">
     <div class="section">
       <div class="section-title" style="justify-content:space-between;">
@@ -542,6 +545,11 @@ let sessionRules = null;      // null = use org rules; string = active override
 let sessionRulesOpen = false; // whether the panel is expanded
 let orgRules = '';            // org rules loaded from /api/rules (cached)
 
+// ── Session Base Prompt Override (Layer 1) ─────────────────
+let sessionPrompt = null;      // null = use DEFAULT_SYSTEM_PROMPT; string = active override
+let sessionPromptOpen = false; // whether the panel is expanded
+let defaultPrompt = '';        // baked-in default loaded from /api/default-prompt (cached)
+
 // ── Reference docs state ────────────────────────────────────
 // Per-session toggle for reference-doc retrieval — the A/B demo lever.
 // When false, generate calls skip the Volume lookup and the LLM sees no docs.
@@ -612,6 +620,67 @@ function clearSessionRules(tabId) {
   for (const t of ['browse', 'batch', 'rules']) renderSessionRulesPanel(t);
   renderRulesTabContent();
   showToast('Reverted to org defaults');
+}
+
+// ── Session Base Prompt Override (Layer 1) ──────────────────
+async function ensureDefaultPrompt() {
+  if (!defaultPrompt) {
+    try { defaultPrompt = (await apiFetch(`${API}/default-prompt`)).prompt || ''; } catch (e) {}
+  }
+}
+
+function renderSessionPromptPanel(tabId) {
+  const el = document.getElementById(`session-prompt-${tabId}`);
+  if (!el) return;
+  const isCustom = sessionPrompt !== null;
+  const badge = isCustom
+    ? '<span class="session-rules-badge">CUSTOM</span>'
+    : '<span style="font-size:11px; color:var(--text-dim); margin-left:8px;">using baked-in default</span>';
+  const chevron = sessionPromptOpen ? '▲' : '▼';
+
+  let html = `<div style="display:flex; justify-content:space-between; align-items:center; cursor:pointer; user-select:none;"
+      onclick="toggleSessionPrompt('${tabId}')">
+    <div>&#129302; <strong style="font-size:13px;">Session Base Prompt Override</strong>${badge}</div>
+    <span style="font-size:11px; color:var(--text-dim);">${chevron} ${sessionPromptOpen ? 'collapse' : 'expand'}</span>
+  </div>`;
+
+  if (sessionPromptOpen) {
+    html += `<div style="margin-top:10px; padding:12px; background:var(--bg); border:1px solid var(--border); border-radius:var(--radius);">
+      <div style="font-size:11px; color:var(--text-dim); margin-bottom:8px;">
+        Overrides the baked-in system prompt (Layer 1) for this browser session only — not saved.
+        Keep the "Return valid JSON only" instruction or output format changes may break parsing.
+      </div>
+      <textarea id="session-prompt-text-${tabId}" style="width:100%; height:180px; padding:8px; background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); color:var(--text); font-family:monospace; font-size:12px; resize:vertical; box-sizing:border-box;">${sessionPrompt !== null ? sessionPrompt : defaultPrompt}</textarea>
+      <div style="margin-top:8px; display:flex; gap:8px;">
+        <button class="btn btn-sm btn-success" onclick="applySessionPrompt('${tabId}')">&#10003; Use for this session</button>
+        <button class="btn btn-sm" onclick="clearSessionPrompt('${tabId}')">&#8634; Reset to default</button>
+      </div>
+    </div>`;
+  }
+  el.innerHTML = html;
+}
+
+async function toggleSessionPrompt(tabId) {
+  sessionPromptOpen = !sessionPromptOpen;
+  if (sessionPromptOpen) await ensureDefaultPrompt();
+  renderSessionPromptPanel(tabId);
+}
+
+function applySessionPrompt(tabId) {
+  const ta = document.getElementById(`session-prompt-text-${tabId}`);
+  const text = ta ? ta.value.trim() : '';
+  sessionPrompt = text || null;
+  sessionPromptOpen = false;
+  for (const t of ['browse', 'batch', 'rules']) renderSessionPromptPanel(t);
+  showToast(sessionPrompt ? 'Custom base prompt active for this session' : 'Reverted to default base prompt');
+}
+
+function clearSessionPrompt(tabId) {
+  sessionPrompt = null;
+  const ta = document.getElementById(`session-prompt-text-${tabId}`);
+  if (ta) ta.value = defaultPrompt;
+  for (const t of ['browse', 'batch', 'rules']) renderSessionPromptPanel(t);
+  showToast('Reverted to default base prompt');
 }
 
 // ── Reference docs: toggle bar + per-schema status ──────────────
@@ -1035,6 +1104,7 @@ async function generateDescriptions() {
       body: JSON.stringify({
         full_name: currentTable.full_name,
         rules_override: sessionRules,
+        prompt_override: sessionPrompt,
         use_reference: useReference,
       }),
     });
@@ -1275,7 +1345,7 @@ async function runBatchGenerate() {
       method: 'POST',
       body: JSON.stringify({
         catalog_name: cat, schema_name: schema,
-        rules_override: sessionRules, use_reference: useReference,
+        rules_override: sessionRules, prompt_override: sessionPrompt, use_reference: useReference,
       }),
     });
 
@@ -1487,6 +1557,7 @@ async function regenerateSingleBrowse(key) {
         full_name: currentTable.full_name,
         item_name: itemName,
         rules_override: sessionRules,
+        prompt_override: sessionPrompt,
         use_reference: useReference,
       }),
     });
@@ -1509,7 +1580,7 @@ async function regenerateBatchCol(fullName, colName, idx, colIdx, btn) {
       method: 'POST',
       body: JSON.stringify({
         full_name: fullName, item_name: colName,
-        rules_override: sessionRules, use_reference: useReference,
+        rules_override: sessionRules, prompt_override: sessionPrompt, use_reference: useReference,
       }),
     });
     const newDesc = data.description;
@@ -1538,7 +1609,7 @@ async function regenerateBatchTable(fullName, idx, btn) {
       method: 'POST',
       body: JSON.stringify({
         full_name: fullName, item_name: null,
-        rules_override: sessionRules, use_reference: useReference,
+        rules_override: sessionRules, prompt_override: sessionPrompt, use_reference: useReference,
       }),
     });
     batchResults[idx].suggestions.table_description = data.description;
@@ -1660,6 +1731,9 @@ loadCatalogs();
 renderSessionRulesPanel('browse');
 renderSessionRulesPanel('batch');
 renderSessionRulesPanel('rules');
+renderSessionPromptPanel('browse');
+renderSessionPromptPanel('batch');
+renderSessionPromptPanel('rules');
 renderReferenceBar();
 </script>
 </body>

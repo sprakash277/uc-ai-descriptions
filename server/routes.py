@@ -166,6 +166,7 @@ class GenerateRequest(BaseModel):
     full_name: str
     model: Optional[str] = None
     rules_override: Optional[str] = None  # Per-session rules; None = use org rules from config.yaml
+    prompt_override: Optional[str] = None  # Per-session base prompt; None = use DEFAULT_SYSTEM_PROMPT
     use_reference: bool = True  # A/B toggle: skip reference-doc retrieval when False
 
 
@@ -179,6 +180,7 @@ async def generate_descriptions(req: GenerateRequest, w=Depends(get_request_clie
             table_info,
             model=req.model,
             rules_override=req.rules_override,
+            prompt_override=req.prompt_override,
             reference_markdown=ref_md or None,
         )
         return {
@@ -204,6 +206,7 @@ class GenerateItemRequest(BaseModel):
     item_name: Optional[str] = None  # None = table description; column name = column description
     model: Optional[str] = None
     rules_override: Optional[str] = None
+    prompt_override: Optional[str] = None
     use_reference: bool = True  # A/B toggle: skip reference-doc retrieval when False
 
 
@@ -217,6 +220,7 @@ async def generate_item_description(req: GenerateItemRequest, w=Depends(get_requ
             table_info,
             model=req.model,
             rules_override=req.rules_override,
+            prompt_override=req.prompt_override,
             reference_markdown=ref_md or None,
         )
         if req.item_name is None:
@@ -243,6 +247,7 @@ class BatchGenerateRequest(BaseModel):
     schema_name: str
     model: Optional[str] = None
     rules_override: Optional[str] = None  # Per-session rules; None = use org rules from config.yaml
+    prompt_override: Optional[str] = None  # Per-session base prompt; None = use DEFAULT_SYSTEM_PROMPT
     use_reference: bool = True  # A/B toggle: skip reference-doc retrieval when False
 
 
@@ -269,6 +274,7 @@ async def batch_generate_descriptions(req: BatchGenerateRequest, w=Depends(get_r
                     table_info,
                     model=req.model,
                     rules_override=req.rules_override,
+                    prompt_override=req.prompt_override,
                     reference_markdown=ref_md or None,
                 )
                 results.append({
@@ -411,6 +417,12 @@ async def apply_batch(req: ApplyBatchRequest,
 @router.get("/rules")
 async def get_rules():
     return {"rules": app_config.responsible_ai_rules}
+
+
+@router.get("/default-prompt")
+async def get_default_prompt():
+    """Return the baked-in Layer 1 base system prompt so the UI can seed the editor."""
+    return {"prompt": ai_gen.DEFAULT_SYSTEM_PROMPT}
 
 
 # ── Notebook Export ──────────────────────────────────────────────────────

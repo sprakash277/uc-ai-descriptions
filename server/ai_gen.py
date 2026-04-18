@@ -21,19 +21,25 @@ Rules:
 - Do not include the column name or type in the description — the reader already sees those.
 - Return valid JSON only, no markdown fences."""
 
-def _build_system_prompt(rules_override: str | None = None) -> str:
+def _build_system_prompt(
+    rules_override: str | None = None,
+    prompt_override: str | None = None,
+) -> str:
     """Build system prompt including Responsible AI rules.
 
     Args:
         rules_override: If provided, replaces the org rules from config for this
                         generation only (per-session override). Pass None to use
                         the org rules from config.yaml.
+        prompt_override: If provided, replaces the base system prompt (Layer 1)
+                        for this generation only. Pass None to use
+                        DEFAULT_SYSTEM_PROMPT.
     """
-    prompt = DEFAULT_SYSTEM_PROMPT
+    base = prompt_override if prompt_override else DEFAULT_SYSTEM_PROMPT
     rules = rules_override if rules_override is not None else app_config.responsible_ai_rules
     if rules:
-        prompt += f"\n\nAdditional organizational rules:\n{rules}"
-    return prompt
+        base += f"\n\nAdditional organizational rules:\n{rules}"
+    return base
 
 
 def _get_client() -> OpenAI:
@@ -46,6 +52,7 @@ def generate_descriptions(
     table_info: dict,
     model: str | None = None,
     rules_override: str | None = None,
+    prompt_override: str | None = None,
     reference_markdown: str | None = None,
 ) -> dict:
     """Generate AI descriptions for a table and all its columns.
@@ -54,6 +61,7 @@ def generate_descriptions(
         table_info: Table metadata dict from catalog.get_table_details.
         model: Optional serving endpoint override.
         rules_override: Optional per-session Responsible AI rules override.
+        prompt_override: Optional per-session base system prompt override.
         reference_markdown: Optional reference-docs markdown block that, when
             non-empty, is prepended to the user prompt so the LLM can ground
             its descriptions in schema-specific business docs.
@@ -105,7 +113,7 @@ Return JSON in this exact format:
     response = client.chat.completions.create(
         model=model,
         messages=[
-            {"role": "system", "content": _build_system_prompt(rules_override=rules_override)},
+            {"role": "system", "content": _build_system_prompt(rules_override=rules_override, prompt_override=prompt_override)},
             {"role": "user", "content": user_prompt},
         ],
         max_tokens=4096,
