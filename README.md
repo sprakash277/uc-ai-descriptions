@@ -37,6 +37,14 @@ FastAPI (app.py + routes.py)
     +-- ai_gen.py ----------------> Foundation Model API (Claude Sonnet)
     |     System prompt + org rules     via OpenAI-compatible client
     |     + session rules override
+    |     + reference markdown (spliced into user prompt when enabled)
+    |
+    +-- reference.py -------------> UC Volume + ai_parse_document
+    |     /Volumes/<cat>/<sch>/reference_docs/  (per-schema, opt-in)
+    |     PDFs -> ai_parse_document (SQL AI fn, per-page billed)
+    |     .md/.txt -> native read via Files API
+    |     (path, mtime) in-memory cache; concatenated markdown is
+    |     prepended to ai_gen's user prompt as "Reference documentation"
     |
     +-- audit.py -----------------> Delta Table (always via SP)
           Audit log writes              user may not have write access
@@ -57,6 +65,8 @@ The workaround: UC's `information_schema` views and `SHOW CATALOGS` are accessib
 | AI Generation (catalog read) | User OBO token | User can only generate for tables they can read |
 | Audit log writes | App Service Principal | User may not have write access to the audit catalog |
 | `applied_by` in audit entries | User email (from headers) | Tracks which user approved each change |
+| Reference-doc parse (`ai_parse_document` SQL) | App Service Principal | SP runs the batched SQL over the Volume on the shared warehouse |
+| Reference-doc Volume read | App Service Principal | SP needs `READ VOLUME` on each schema's `reference_docs` Volume |
 
 When OBO is not enabled, all operations gracefully fall back to the SP client.
 
@@ -168,14 +178,58 @@ GRANT CREATE TABLE ON SCHEMA <audit-catalog>.<audit-schema> TO `<sp-id>`;
 GRANT MODIFY ON SCHEMA <audit-catalog>.<audit-schema> TO `<sp-id>`;
 ```
 
+### Step 6a: Configure Reference Documentation (Optional)
+
+The app can use customer-provided reference docs (data dictionaries, glossaries, runbooks) as context for the AI when generating descriptions. Docs live in a UC Volume per schema so **governance is UC-native** — schema owners control their own Volume, no central corpus.
+
+**Convention:** for `<catalog>.<schema>.<table>`, the app looks at `/Volumes/<catalog>/<schema>/<volume_name>/` where `volume_name` is configured in `config.yaml` (default `reference_docs`). If the Volume doesn't exist or the SP lacks `READ VOLUME`, the app silently skips reference context for that schema.
+
+**Per schema you want to enable:**
+
+```sql
+-- Create the Volume (managed volume is simplest)
+CREATE VOLUME IF NOT EXISTS <catalog>.<schema>.reference_docs;
+
+-- Grant the app SP read access
+GRANT READ VOLUME ON VOLUME <catalog>.<schema>.reference_docs TO `<sp-id>`;
+```
+
+Then drop reference docs into the Volume via UI (Catalog → Volumes → Upload) or:
+
+```bash
+databricks fs cp ./data_dictionary.pdf dbfs:/Volumes/<cat>/<sch>/reference_docs/ -p <your-profile>
+databricks fs cp ./glossary.md         dbfs:/Volumes/<cat>/<sch>/reference_docs/ -p <your-profile>
+```
+
+**Supported formats:** `.pdf` (parsed via `ai_parse_document` — includes OCR + table extraction), `.md`, `.txt`. Other formats are skipped with a warning log.
+
+**Cost note:** `ai_parse_document` is per-page billed. PDFs are parsed once per `(path, mtime)` and cached in memory, so subsequent generates on the same schema reuse cached markdown until a file changes. Re-parse happens automatically when the Volume's mtimes change or when a user clicks **Refresh** in the reference docs panel.
+
+**Config:** set `reference.volume_name: "reference_docs"` in `config.yaml` (already set to this default). Leave empty to disable the feature globally.
+
 ### Step 7: Verify Deployment
+
+**Important — start the app before the first deploy.** `databricks apps create` usually starts compute automatically, but if it was ever stopped you must start it (via UI → Compute → Apps → `uc-ai-descriptions` → Start, or CLI `databricks apps start uc-ai-descriptions -p <your-profile>`) **before** running `databricks apps deploy` — otherwise deploy fails with a compute-unavailable error. Compute startup takes 2–4 minutes.
 
 ```bash
 # Check status — should show RUNNING with user_api_scopes: ['sql']
 databricks apps get uc-ai-descriptions -p <your-profile>
 ```
 
+**Also grant `CAN_USE` on the SQL warehouse to the app SP AND every OBO user** (or a group that covers them). Without this, the browse tree and all `information_schema` queries fail with a warehouse-permission error. Example CLI (replace IDs and usernames):
+
+```bash
+databricks api patch /api/2.0/permissions/warehouses/<warehouse-id> -p <your-profile> --json '{
+  "access_control_list": [
+    {"service_principal_name": "<sp-application-id>", "permission_level": "CAN_USE"},
+    {"user_name": "user@company.com", "permission_level": "CAN_USE"}
+  ]
+}'
+```
+
 When a user opens the app for the first time, Databricks will prompt them to **authorize** the app (one-time per app version). After authorization, all browse and apply operations run under their own UC identity.
+
+> **Troubleshooting — blank screens or stuck auth state on first load:** on the initial load after deployment, or after toggling OBO ↔ SP authentication modes, the browser may hold stale auth state. Clear the browser cache or open the app in an incognito window to force a fresh handshake.
 
 ### Startup Audit Validation
 
@@ -230,6 +284,8 @@ Click a catalog to expand it and see schemas. Click a schema to see tables.
 8. Click **"Apply to Metastore"** to write approved descriptions to Unity Catalog
 9. If your UC permissions don't include MODIFY, you'll see a **403 Permission denied** error
 
+**Reference docs bar (when enabled):** a bar above the table editor shows `📚 N reference docs` for the selected schema with an **on/off toggle**. Flip the toggle to compare AI output with vs. without the reference context — the A/B lever. Expand each generated description's **"Informed by N reference source(s)"** disclosure to see which file(s) and snippet(s) contributed. A collapsible **Reference Docs panel** lists each file with its parse status, char count, and a **Refresh** button to force re-parse after you update a doc in the Volume.
+
 ### Tab 2: Batch Schema Processing
 
 Generate AI descriptions for **ALL tables in a schema** at once. Select a catalog and schema from the dropdowns, then click **"Generate for All Tables"**.
@@ -245,6 +301,8 @@ Generate AI descriptions for **ALL tables in a schema** at once. Select a catalo
 6. **Regen** individual table or column descriptions in place
 7. **Apply** per-column, per-table, or use **Apply All Tables** for bulk application
 8. Button states cascade: when all columns are applied, the table button auto-updates; when all tables are applied, the global button auto-updates
+
+The reference-docs bar and toggle work identically here — every table in the batch is generated with the same reference context (or none, when toggled off).
 
 ### Tab 3: Responsible AI Rules
 
@@ -296,6 +354,23 @@ Download a self-contained Python notebook that can be scheduled as a Databricks 
 5. Applies all approved descriptions via `COMMENT ON TABLE` / `ALTER COLUMN COMMENT`
 6. Tracks full audit trail: who approved, when, AI vs final description
 
+### Reference Documentation (used across Tabs 1 & 2)
+
+Reference Documentation is an optional feature that lets the AI use your own data dictionaries, glossaries, and runbooks as context when generating descriptions. It's most useful for schemas with cryptic column names, encoded value sets (status codes, channel codes), or domain-specific vocabulary the LLM can't guess from names alone.
+
+**How it works:**
+
+1. For every generate call, the app looks for `/Volumes/<catalog>/<schema>/reference_docs/` (Volume name configurable via `reference.volume_name` in `config.yaml`).
+2. Any new or changed files are parsed: PDFs via `ai_parse_document()` (OCR + tables + layout), `.md`/`.txt` via native read. Parsed markdown is cached in memory keyed on `(path, mtime)` — unchanged files are never re-parsed.
+3. All cached markdown is concatenated (with `[Source: <filename>]` separators), capped at `reference.per_doc_max_chars` per file and `reference.total_max_chars` total, and prepended to the AI's user prompt.
+4. The model's response includes a `sources` list (filename + ~200-char snippet of what was retrieved) — shown in the UI as an **"Informed by N reference source(s)"** disclosure under each generated description.
+
+**Per-session toggle:** the bar above Browse/Batch has an **on/off switch**. When off, the app sends `use_reference: false` with each generate request and skips retrieval entirely — same table, same prompt, no reference context. Useful for showing the before/after lift of reference docs on the same schema.
+
+**Reference Docs panel:** a collapsible panel in the app lists every file the app sees in the current schema's Volume, its parse status (✅ parsed · ⚠️ parsed with warnings · ❌ failed), the extracted char count, and the Volume path. The **Refresh** button calls `POST /api/reference/refresh` to force re-parse — use this when you've just updated a doc and want the next generate to reflect the change immediately rather than waiting for the next natural cache check.
+
+**Setup:** see [Step 6a](#step-6a-configure-reference-documentation-optional) above.
+
 ---
 
 ## Configuration
@@ -326,6 +401,9 @@ targets:
 | `audit.table` | `governance.ai_descriptions.audit_log` | Centralized audit table (full three-part name) |
 | `exclusions.catalogs` | `["__databricks_internal", "system"]` | Catalogs hidden from the browse tree |
 | `exclusions.schemas` | `["information_schema"]` | Schemas hidden from the browse tree |
+| `reference.volume_name` | `"reference_docs"` | Per-schema Volume name the app reads reference docs from. Empty string disables the feature. |
+| `reference.per_doc_max_chars` | `8000` | Max chars from each parsed reference doc included in the prompt (head is kept; tail is clipped) |
+| `reference.total_max_chars` | `40000` | Max total chars of reference markdown per generate request; exceeded size is logged as a warning |
 
 ---
 
@@ -346,6 +424,7 @@ uc-ai-descriptions/
     sql_utils.py        # SQL safety (identifier validation, quoting, comment escaping)
     catalog.py          # Unity Catalog operations via SQL (browse + apply comments)
     ai_gen.py           # AI description generation via FMAPI + notebook export
+    reference.py        # Per-schema reference docs: UC Volume + ai_parse_document + (path,mtime) cache
     audit.py            # Centralized Delta table audit logging with startup validation
     routes.py           # All API endpoints with per-user client injection
   static/
@@ -374,9 +453,11 @@ uc-ai-descriptions/
 | GET | `/api/schemas/{catalog}` | OBO/SP | List schemas in a catalog |
 | GET | `/api/tables/{catalog}/{schema}` | OBO/SP | List tables in a schema |
 | GET | `/api/table/{full_name}` | OBO/SP | Get table details + columns |
-| POST | `/api/generate` | OBO/SP | Generate AI descriptions for a single table |
-| POST | `/api/generate/item` | OBO/SP | Regenerate a single table or column description |
-| POST | `/api/generate/batch` | OBO/SP | Generate AI descriptions for all tables in a schema |
+| POST | `/api/generate` | OBO/SP | Generate AI descriptions for a single table. Request body accepts `use_reference: bool` (default `true`) to skip reference-doc retrieval for this call. |
+| POST | `/api/generate/item` | OBO/SP | Regenerate a single table or column description. Also honors `use_reference`. |
+| POST | `/api/generate/batch` | OBO/SP | Generate AI descriptions for all tables in a schema. Reference docs are fetched once per batch and reused across every table's LLM call. |
+| GET | `/api/reference/status` | SP | Status of the reference-docs Volume for a given schema: file list, parse status per file (`parsed` / `parsed_with_warnings` / `failed` / `pending`), char counts, Volume path. Query params: `catalog`, `schema`. |
+| POST | `/api/reference/refresh` | SP | Force re-parse of the schema's reference Volume, bypassing the `(path, mtime)` cache. Body: `{catalog, schema_name, force?}`. Use after updating a doc in the Volume to make the next generate reflect the change immediately. |
 | POST | `/api/apply/table` | OBO/SP | Apply a table comment (UC enforces MODIFY) |
 | POST | `/api/apply/column` | OBO/SP | Apply a column comment (UC enforces MODIFY) |
 | POST | `/api/apply/batch` | OBO/SP + SP(audit) | Apply multiple comments with audit logging |
