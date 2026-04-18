@@ -46,8 +46,17 @@ def generate_descriptions(
     table_info: dict,
     model: str | None = None,
     rules_override: str | None = None,
+    reference_markdown: str | None = None,
 ) -> dict:
     """Generate AI descriptions for a table and all its columns.
+
+    Args:
+        table_info: Table metadata dict from catalog.get_table_details.
+        model: Optional serving endpoint override.
+        rules_override: Optional per-session Responsible AI rules override.
+        reference_markdown: Optional reference-docs markdown block that, when
+            non-empty, is prepended to the user prompt so the LLM can ground
+            its descriptions in schema-specific business docs.
 
     Returns:
         {
@@ -67,7 +76,14 @@ def generate_descriptions(
         for c in table_info["columns"]
     )
 
-    user_prompt = f"""Generate descriptions for this Unity Catalog table and its columns.
+    ref_block = ""
+    if reference_markdown:
+        ref_block = (
+            "Reference documentation (use to inform descriptions; ignore irrelevant parts):\n"
+            f"{reference_markdown}\n\n---\n\n"
+        )
+
+    user_prompt = f"""{ref_block}Generate descriptions for this Unity Catalog table and its columns.
 
 Table: {table_info['full_name']}
 Type: {table_info['table_type']}

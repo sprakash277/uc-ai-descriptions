@@ -1,6 +1,7 @@
 """API routes for the UC AI Descriptions App."""
 
 import logging
+import threading
 import traceback
 from typing import Optional
 
@@ -13,9 +14,91 @@ from databricks.sdk.errors import PermissionDenied
 from . import catalog, ai_gen, audit
 from .config import app_config, get_workspace_client, get_user_workspace_client
 from .identity import get_current_user, get_user_token
+from .reference import ReferenceService
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
+
+
+# ── Reference service (lazy singleton) ───────────────────────────────────
+
+_reference_service: Optional[ReferenceService] = None
+_reference_lock = threading.Lock()
+
+
+def _get_reference_service() -> Optional[ReferenceService]:
+    """Return a singleton ReferenceService if the feature is enabled, else None.
+
+    Enabled iff `app_config.reference_volume_name` is non-empty. The service
+    uses the app SP workspace client (not the OBO user client) because PDF
+    parsing runs SQL against the app's warehouse.
+    """
+    global _reference_service
+    if not app_config.reference_volume_name:
+        return None
+    if _reference_service is not None:
+        return _reference_service
+    with _reference_lock:
+        if _reference_service is not None:
+            return _reference_service
+        try:
+            from .warehouse import resolve_warehouse_id
+            wh_id = resolve_warehouse_id()
+        except Exception as e:
+            logger.warning("ReferenceService disabled: no warehouse available (%s)", e)
+            return None
+        if not wh_id:
+            logger.warning("ReferenceService disabled: warehouse_id not configured")
+            return None
+        _reference_service = ReferenceService(
+            volume_name=app_config.reference_volume_name,
+            warehouse_id=wh_id,
+            workspace_client=get_workspace_client(),
+            per_doc_max_chars=app_config.reference_per_doc_max_chars,
+            total_max_chars=app_config.reference_total_max_chars,
+        )
+        logger.info(
+            "ReferenceService enabled: volume=%s warehouse=%s per_doc=%d total=%d",
+            app_config.reference_volume_name, wh_id,
+            app_config.reference_per_doc_max_chars,
+            app_config.reference_total_max_chars,
+        )
+        return _reference_service
+
+
+def _fetch_reference(full_name: str, use_reference: bool = True) -> tuple[str, list[dict]]:
+    """Return ``(markdown, sources)`` for ``<catalog>.<schema>.<table>``.
+
+    Each ``sources`` entry is ``{"filename": str, "snippet": str}`` — the
+    first ~200 chars of that doc's contribution, suitable for the UI's
+    "Informed by N sources" disclosure.
+
+    When ``use_reference`` is ``False`` (per-session toggle off), this
+    short-circuits to ``("", [])`` so the caller runs with no reference
+    context. This is the A/B demo lever — same table, toggle drives
+    whether the LLM sees the schema's docs.
+    """
+    if not use_reference:
+        return "", []
+    svc = _get_reference_service()
+    if not svc:
+        return "", []
+    parts = full_name.split(".")
+    if len(parts) < 2:
+        return "", []
+    catalog_name, schema_name = parts[0], parts[1]
+    try:
+        md, sources = svc.get_reference_context(catalog_name, schema_name)
+        if sources:
+            filenames = [s.get("filename", "") for s in sources]
+            logger.info(
+                "Reference context for %s.%s: %d source(s), %d chars — %s",
+                catalog_name, schema_name, len(sources), len(md), filenames,
+            )
+        return md, sources
+    except Exception as e:
+        logger.warning("Reference lookup failed for %s.%s: %s", catalog_name, schema_name, e)
+        return "", []
 
 
 def get_request_client(request: Request):
@@ -83,6 +166,7 @@ class GenerateRequest(BaseModel):
     full_name: str
     model: Optional[str] = None
     rules_override: Optional[str] = None  # Per-session rules; None = use org rules from config.yaml
+    use_reference: bool = True  # A/B toggle: skip reference-doc retrieval when False
 
 
 @router.post("/generate")
@@ -90,13 +174,21 @@ async def generate_descriptions(req: GenerateRequest, w=Depends(get_request_clie
     """Generate AI descriptions for a table and its columns."""
     try:
         table_info = catalog.get_table_details(req.full_name, w=w)
-        suggestions = ai_gen.generate_descriptions(table_info, model=req.model, rules_override=req.rules_override)
+        ref_md, ref_sources = _fetch_reference(req.full_name, use_reference=req.use_reference)
+        suggestions = ai_gen.generate_descriptions(
+            table_info,
+            model=req.model,
+            rules_override=req.rules_override,
+            reference_markdown=ref_md or None,
+        )
         return {
             "status": "success",
             "table_full_name": req.full_name,
             "current_table_comment": table_info["comment"],
             "suggestions": suggestions,
             "columns": table_info["columns"],
+            "sources": ref_sources,
+            "used_reference": bool(ref_sources),
         }
     except PermissionDenied as e:
         raise HTTPException(status_code=403, detail=str(e))
@@ -112,6 +204,7 @@ class GenerateItemRequest(BaseModel):
     item_name: Optional[str] = None  # None = table description; column name = column description
     model: Optional[str] = None
     rules_override: Optional[str] = None
+    use_reference: bool = True  # A/B toggle: skip reference-doc retrieval when False
 
 
 @router.post("/generate/item")
@@ -119,12 +212,23 @@ async def generate_item_description(req: GenerateItemRequest, w=Depends(get_requ
     """Re-generate AI description for a single table or column (using full table context)."""
     try:
         table_info = catalog.get_table_details(req.full_name, w=w)
-        suggestions = ai_gen.generate_descriptions(table_info, model=req.model, rules_override=req.rules_override)
+        ref_md, ref_sources = _fetch_reference(req.full_name, use_reference=req.use_reference)
+        suggestions = ai_gen.generate_descriptions(
+            table_info,
+            model=req.model,
+            rules_override=req.rules_override,
+            reference_markdown=ref_md or None,
+        )
         if req.item_name is None:
             description = suggestions["table_description"]
         else:
             description = suggestions["column_descriptions"].get(req.item_name, "")
-        return {"status": "success", "description": description}
+        return {
+            "status": "success",
+            "description": description,
+            "sources": ref_sources,
+            "used_reference": bool(ref_sources),
+        }
     except PermissionDenied as e:
         raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
@@ -139,6 +243,7 @@ class BatchGenerateRequest(BaseModel):
     schema_name: str
     model: Optional[str] = None
     rules_override: Optional[str] = None  # Per-session rules; None = use org rules from config.yaml
+    use_reference: bool = True  # A/B toggle: skip reference-doc retrieval when False
 
 
 @router.post("/generate/batch")
@@ -149,13 +254,23 @@ async def batch_generate_descriptions(req: BatchGenerateRequest, w=Depends(get_r
         results = []
         errors = []
 
+        # Batch: fetch reference once per schema (not per table) since it's schema-scoped.
+        ref_md, ref_sources = _fetch_reference(
+            f"{req.catalog_name}.{req.schema_name}.*", use_reference=req.use_reference
+        )
+
         for t in tables:
             # Skip audit tables
             if t["name"].startswith("_ai_"):
                 continue
             try:
                 table_info = catalog.get_table_details(t["full_name"], w=w)
-                suggestions = ai_gen.generate_descriptions(table_info, model=req.model, rules_override=req.rules_override)
+                suggestions = ai_gen.generate_descriptions(
+                    table_info,
+                    model=req.model,
+                    rules_override=req.rules_override,
+                    reference_markdown=ref_md or None,
+                )
                 results.append({
                     "full_name": t["full_name"],
                     "table_name": t["name"],
@@ -175,6 +290,8 @@ async def batch_generate_descriptions(req: BatchGenerateRequest, w=Depends(get_r
             "tables_failed": len(errors),
             "results": results,
             "errors": errors,
+            "sources": ref_sources,
+            "used_reference": bool(ref_sources),
         }
     except Exception as e:
         logger.error("Batch generate failed: %s", traceback.format_exc())
@@ -320,6 +437,70 @@ async def export_notebook(req: NotebookExportRequest):
         )
     except Exception as e:
         logger.error("Notebook export failed: %s", traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Reference Docs (per-schema Volume) ───────────────────────────────────
+
+def _reference_disabled_response(catalog_name: str, schema_name: str) -> dict:
+    """Fallback payload when the feature is disabled or the Volume is missing.
+
+    We return a well-formed response (empty files list) so the UI can render
+    a clear "no docs" state instead of a generic error.
+    """
+    volume_name = app_config.reference_volume_name or ""
+    volume_path = (
+        f"/Volumes/{catalog_name}/{schema_name}/{volume_name}" if volume_name else ""
+    )
+    return {
+        "volume_path": volume_path,
+        "volume_name": volume_name,
+        "files": [],
+        "total_char_count": 0,
+        "total_char_budget": app_config.reference_total_max_chars,
+        "enabled": bool(volume_name),
+    }
+
+
+@router.get("/reference/status")
+async def reference_status(catalog: str, schema: str):
+    """Report parse status for every reference doc in ``<catalog>.<schema>``.
+
+    Drives the "Reference Documentation" panel in the UI. Safe to call
+    repeatedly — uses the in-memory cache, so cheap when nothing changed.
+    """
+    try:
+        svc = _get_reference_service()
+        if not svc:
+            return _reference_disabled_response(catalog, schema)
+        data = svc.get_status(catalog, schema, force_refresh=False)
+        data["enabled"] = True
+        return data
+    except Exception as e:
+        logger.error("Reference status failed for %s.%s: %s", catalog, schema, traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class ReferenceRefreshRequest(BaseModel):
+    catalog: str
+    schema_name: str  # "schema" is reserved by Pydantic → alias on the wire
+
+
+@router.post("/reference/refresh")
+async def reference_refresh(req: ReferenceRefreshRequest):
+    """Force-reparse every reference doc for ``<catalog>.<schema>`` and return
+    the updated status. Called from the "Refresh" button in the UI after an
+    operator replaces a doc in the Volume.
+    """
+    try:
+        svc = _get_reference_service()
+        if not svc:
+            return _reference_disabled_response(req.catalog, req.schema_name)
+        data = svc.get_status(req.catalog, req.schema_name, force_refresh=True)
+        data["enabled"] = True
+        return data
+    except Exception as e:
+        logger.error("Reference refresh failed for %s.%s: %s", req.catalog, req.schema_name, traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
 
 

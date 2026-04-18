@@ -264,6 +264,91 @@
     font-size: 11px; font-weight: 600; padding: 1px 6px; border-radius: 3px;
     border: 1px solid var(--orange); color: var(--orange); margin-left: 8px;
   }
+
+  /* ── Reference-docs toggle + sources disclosure ──────────────── */
+  .reference-bar {
+    padding: 8px 24px; background: var(--surface); border-bottom: 1px solid var(--border);
+    font-size: 13px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  }
+  .reference-bar .ref-label { color: var(--text-dim); display: flex; align-items: center; gap: 6px; }
+  .reference-bar .ref-count { color: var(--text); font-weight: 600; }
+  .reference-bar .ref-count.none { color: var(--text-dim); font-weight: normal; }
+
+  .toggle-switch {
+    position: relative; display: inline-block; width: 36px; height: 20px;
+    vertical-align: middle;
+  }
+  .toggle-switch input { opacity: 0; width: 0; height: 0; }
+  .toggle-slider {
+    position: absolute; cursor: pointer; inset: 0; background: var(--border);
+    border-radius: 20px; transition: background 0.15s;
+  }
+  .toggle-slider::before {
+    content: ""; position: absolute; height: 14px; width: 14px; left: 3px; top: 3px;
+    background: white; border-radius: 50%; transition: transform 0.15s;
+  }
+  .toggle-switch input:checked + .toggle-slider { background: var(--accent); }
+  .toggle-switch input:checked + .toggle-slider::before { transform: translateX(16px); }
+  .toggle-switch input:disabled + .toggle-slider { opacity: 0.4; cursor: not-allowed; }
+
+  .sources-disclosure {
+    margin-top: 8px; padding: 8px 10px; background: var(--bg);
+    border: 1px solid var(--border); border-radius: 4px; font-size: 12px;
+  }
+  .sources-summary {
+    cursor: pointer; user-select: none; color: var(--accent); display: flex;
+    align-items: center; gap: 6px; list-style: none;
+  }
+  .sources-summary::-webkit-details-marker { display: none; }
+  .sources-summary::before { content: "▶"; font-size: 10px; transition: transform 0.15s; }
+  .sources-disclosure[open] .sources-summary::before { transform: rotate(90deg); }
+  .sources-list { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+  .source-item {
+    padding: 6px 8px; background: var(--surface2); border-radius: 4px;
+    border-left: 2px solid var(--accent);
+  }
+  .source-item .source-filename {
+    font-family: monospace; font-size: 11px; color: var(--text); font-weight: 600;
+    margin-bottom: 3px;
+  }
+  .source-item .source-snippet {
+    font-size: 11px; color: var(--text-dim); line-height: 1.5;
+  }
+
+  /* ── Reference docs panel (collapsible) ──────────────────────── */
+  .ref-panel {
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+    margin-bottom: 16px; overflow: hidden;
+  }
+  .ref-panel-header {
+    padding: 10px 14px; cursor: pointer; display: flex; justify-content: space-between;
+    align-items: center; font-size: 13px; user-select: none;
+  }
+  .ref-panel-header:hover { background: var(--surface2); }
+  .ref-panel-body { padding: 10px 14px 14px; border-top: 1px solid var(--border); }
+  .ref-panel-path {
+    font-family: monospace; font-size: 11px; color: var(--text-dim); margin-bottom: 8px;
+    word-break: break-all;
+  }
+  .ref-file-row {
+    display: flex; align-items: center; gap: 8px; padding: 4px 0;
+    border-bottom: 1px solid var(--border); font-size: 12px;
+  }
+  .ref-file-row:last-child { border-bottom: none; }
+  .ref-file-row .status-icon { font-size: 14px; width: 16px; text-align: center; }
+  .ref-file-row .status-icon.parsed { color: var(--green); }
+  .ref-file-row .status-icon.parsed_with_warnings { color: var(--yellow); }
+  .ref-file-row .status-icon.failed { color: var(--red); }
+  .ref-file-row .status-icon.pending { color: var(--text-dim); }
+  .ref-file-row .ref-filename {
+    font-family: monospace; font-size: 11px; color: var(--text);
+    flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .ref-file-row .ref-meta { color: var(--text-dim); font-size: 11px; }
+  .ref-panel-footer {
+    margin-top: 10px; display: flex; justify-content: space-between; align-items: center;
+    font-size: 11px; color: var(--text-dim);
+  }
 </style>
 </head>
 <body>
@@ -284,6 +369,7 @@
 <!-- ═══ TAB: Browse & Generate ═══════════════════════════════════════ -->
 <div id="tab-browse" class="tab-content">
   <div id="session-rules-browse" class="session-rules-bar"></div>
+  <div id="reference-bar-browse" class="reference-bar"></div>
   <div class="layout">
     <div class="sidebar">
       <h2>Catalog Browser</h2>
@@ -302,6 +388,7 @@
 <!-- ═══ TAB: Batch Schema ════════════════════════════════════════════ -->
 <div id="tab-batch" class="tab-content" style="display:none;">
   <div id="session-rules-batch" class="session-rules-bar"></div>
+  <div id="reference-bar-batch" class="reference-bar"></div>
   <div class="full-panel">
     <div class="section">
       <div class="section-title">&#9889; Batch Generate Descriptions for Entire Schema</div>
@@ -455,6 +542,17 @@ let sessionRules = null;      // null = use org rules; string = active override
 let sessionRulesOpen = false; // whether the panel is expanded
 let orgRules = '';            // org rules loaded from /api/rules (cached)
 
+// ── Reference docs state ────────────────────────────────────
+// Per-session toggle for reference-doc retrieval — the A/B demo lever.
+// When false, generate calls skip the Volume lookup and the LLM sees no docs.
+let useReference = true;
+// Latest status payload keyed by "<catalog>.<schema>" — {volume_path, files, total_char_count, ...}
+const referenceStatusCache = {};
+// Whether the Reference Documentation panel in the main view is expanded.
+let referencePanelOpen = false;
+// Currently selected schema ("catalog.schema") — drives the reference bar + panel.
+let currentSchemaKey = null;
+
 async function ensureOrgRules() {
   if (!orgRules) {
     try { orgRules = (await apiFetch(`${API}/rules`)).rules || ''; } catch (e) {}
@@ -514,6 +612,213 @@ function clearSessionRules(tabId) {
   for (const t of ['browse', 'batch', 'rules']) renderSessionRulesPanel(t);
   renderRulesTabContent();
   showToast('Reverted to org defaults');
+}
+
+// ── Reference docs: toggle bar + per-schema status ──────────────
+// The bar at the top of Browse/Batch shows the currently-selected schema's
+// reference-doc count plus the on/off toggle. Rendered each time the
+// selection or status changes; identical markup in both tabs.
+function renderReferenceBar() {
+  for (const tabId of ['browse', 'batch']) {
+    const el = document.getElementById(`reference-bar-${tabId}`);
+    if (!el) continue;
+
+    if (!currentSchemaKey) {
+      el.innerHTML = `<div class="ref-label">&#128218; Reference docs
+        <span style="color:var(--text-dim); font-style:italic; font-size:12px;">
+          (select a schema to see its reference docs)
+        </span></div>
+        <label class="toggle-switch" title="Select a schema first">
+          <input type="checkbox" ${useReference ? 'checked' : ''} disabled>
+          <span class="toggle-slider"></span>
+        </label>
+        <span style="color:var(--text-dim); font-size:12px;">
+          Use when generating: ${useReference ? 'On' : 'Off'}
+        </span>`;
+      continue;
+    }
+
+    const status = referenceStatusCache[currentSchemaKey];
+    let countLabel = '<span class="ref-count none">loading...</span>';
+    if (status) {
+      if (!status.enabled) {
+        countLabel = '<span class="ref-count none">feature disabled</span>';
+      } else if (status.files && status.files.length > 0) {
+        const parsed = status.files.filter(f => f.status === 'parsed' || f.status === 'parsed_with_warnings').length;
+        const failed = status.files.filter(f => f.status === 'failed').length;
+        countLabel = `<span class="ref-count">${parsed} reference doc${parsed === 1 ? '' : 's'}</span>`;
+        if (failed > 0) countLabel += ` <span style="color:var(--red); font-size:11px;">(${failed} failed)</span>`;
+      } else {
+        countLabel = '<span class="ref-count none">no docs in Volume</span>';
+      }
+    }
+
+    const schemaLabel = currentSchemaKey.replace(/\./g, ' / ');
+    el.innerHTML = `
+      <div class="ref-label">&#128218; ${countLabel}
+        <span style="color:var(--text-dim); font-size:11px;">for ${schemaLabel}</span>
+      </div>
+      <span style="color:var(--text-dim); font-size:12px;">Use when generating:</span>
+      <label class="toggle-switch" title="Toggle to regenerate with/without reference docs">
+        <input type="checkbox" ${useReference ? 'checked' : ''} onchange="toggleUseReference(this.checked)">
+        <span class="toggle-slider"></span>
+      </label>
+      <span id="ref-toggle-label-${tabId}" style="font-weight:600; font-size:12px; color:${useReference ? 'var(--green)' : 'var(--text-dim)'};">
+        ${useReference ? 'On' : 'Off'}
+      </span>
+    `;
+  }
+}
+
+function toggleUseReference(on) {
+  useReference = !!on;
+  renderReferenceBar();
+  // If a table view is currently rendered, re-render so any existing
+  // "Informed by N sources" disclosures reflect the new toggle state
+  // (new generates will honour it — old responses stay as-is).
+  showToast(useReference
+    ? 'Reference docs enabled for next generation'
+    : 'Reference docs disabled — next generation will be generic');
+}
+
+async function loadReferenceStatus(catalogName, schemaName, force = false) {
+  const key = `${catalogName}.${schemaName}`;
+  currentSchemaKey = key;
+  renderReferenceBar();
+  try {
+    const url = force
+      ? `${API}/reference/refresh`
+      : `${API}/reference/status?catalog=${encodeURIComponent(catalogName)}&schema=${encodeURIComponent(schemaName)}`;
+    const opts = force
+      ? { method: 'POST', body: JSON.stringify({ catalog: catalogName, schema_name: schemaName }) }
+      : {};
+    const data = await apiFetch(url, opts);
+    referenceStatusCache[key] = data;
+  } catch (e) {
+    referenceStatusCache[key] = { enabled: false, files: [], volume_path: '',
+      volume_name: '', total_char_count: 0, total_char_budget: 0, error: e.message };
+  }
+  renderReferenceBar();
+  // If the ref panel is visible on the Browse tab, re-render it.
+  renderReferencePanel();
+}
+
+// Reference Documentation panel — shown on the Browse tab above the table view.
+// Lists each file in the schema's reference Volume with parse status, char count,
+// and a Refresh button that force-reparses.
+function referencePanelHtml() {
+  if (!currentSchemaKey) return '';
+  const status = referenceStatusCache[currentSchemaKey];
+  if (!status) return '';
+
+  const [cat, sch] = currentSchemaKey.split('.');
+  const chevron = referencePanelOpen ? '▲' : '▼';
+  const fileCount = status.files ? status.files.length : 0;
+  const parsedCount = status.files ? status.files.filter(f => f.status === 'parsed' || f.status === 'parsed_with_warnings').length : 0;
+
+  let headerRight = '';
+  if (!status.enabled) {
+    headerRight = '<span style="font-size:11px; color:var(--text-dim);">feature disabled</span>';
+  } else if (fileCount === 0) {
+    headerRight = '<span style="font-size:11px; color:var(--text-dim);">no docs</span>';
+  } else {
+    headerRight = `<span style="font-size:11px; color:var(--text-dim);">${parsedCount}/${fileCount} parsed · ${status.total_char_count.toLocaleString()} / ${status.total_char_budget.toLocaleString()} chars</span>`;
+  }
+
+  let body = '';
+  if (referencePanelOpen) {
+    const pathLine = status.volume_path
+      ? `<div class="ref-panel-path">Volume: ${status.volume_path}</div>`
+      : '<div class="ref-panel-path" style="color:var(--text-dim); font-style:italic;">Reference docs feature not enabled (no volume_name in config.yaml)</div>';
+
+    let fileList = '';
+    if (!status.enabled) {
+      fileList = `<div style="font-size:12px; color:var(--text-dim);">Set <code>reference.volume_name</code> in <code>config.yaml</code> and redeploy to enable per-schema reference docs.</div>`;
+    } else if (fileCount === 0) {
+      fileList = `<div style="font-size:12px; color:var(--text-dim);">
+        No reference docs found. Upload <code>.pdf</code>, <code>.md</code>, or <code>.txt</code> files to
+        <code>${status.volume_path}</code> and click Refresh.
+      </div>`;
+    } else {
+      fileList = status.files.map(f => {
+        let icon = '⋯', iconClass = f.status;
+        if (f.status === 'parsed') icon = '✅';
+        else if (f.status === 'parsed_with_warnings') icon = '⚠️';
+        else if (f.status === 'failed') icon = '❌';
+        const meta = f.status === 'failed'
+          ? `<span class="ref-meta" title="${escapeAttr(f.error)}">failed: ${truncate(f.error, 50)}</span>`
+          : f.status === 'pending'
+            ? '<span class="ref-meta">queued</span>'
+            : `<span class="ref-meta">${f.ext.toUpperCase()} · ${formatBytes(f.size_bytes)} · ${f.char_count.toLocaleString()} chars</span>`;
+        return `<div class="ref-file-row">
+          <span class="status-icon ${iconClass}">${icon}</span>
+          <span class="ref-filename" title="${escapeAttr(f.filename)}">${f.filename}</span>
+          ${meta}
+        </div>`;
+      }).join('');
+    }
+
+    body = `<div class="ref-panel-body">
+      ${pathLine}
+      ${fileList}
+      <div class="ref-panel-footer">
+        <span>Status is cached — click Refresh to re-parse after replacing a file.</span>
+        <button class="btn btn-sm btn-outline" id="ref-refresh-btn" onclick="refreshReferenceDocs()">&#8635; Refresh</button>
+      </div>
+    </div>`;
+  }
+
+  return `<div class="ref-panel">
+    <div class="ref-panel-header" onclick="toggleReferencePanel()">
+      <span>&#128218; <strong>Reference Documentation</strong> for <code style="font-size:12px;">${cat}.${sch}</code></span>
+      <span style="display:flex; gap:10px; align-items:center;">
+        ${headerRight}
+        <span style="font-size:11px; color:var(--text-dim);">${chevron}</span>
+      </span>
+    </div>
+    ${body}
+  </div>`;
+}
+
+function toggleReferencePanel() {
+  referencePanelOpen = !referencePanelOpen;
+  renderReferencePanel();
+}
+
+function renderReferencePanel() {
+  const slot = document.getElementById('reference-panel-slot');
+  if (slot) slot.innerHTML = referencePanelHtml();
+}
+
+async function refreshReferenceDocs() {
+  if (!currentSchemaKey) return;
+  const [cat, sch] = currentSchemaKey.split('.');
+  const btn = document.getElementById('ref-refresh-btn');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<div class="spinner"></div>'; }
+  await loadReferenceStatus(cat, sch, true);
+  showToast('Reference docs refreshed');
+}
+
+function formatBytes(n) {
+  if (!n && n !== 0) return '';
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function truncate(s, n) {
+  if (!s) return '';
+  return s.length > n ? s.substring(0, n) + '…' : s;
+}
+
+function escapeAttr(s) {
+  if (!s) return '';
+  return String(s).replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function escapeHtml(s) {
+  if (s === null || s === undefined) return '';
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 // ── Tab Switching ──────────────────────────────────────────
@@ -594,6 +899,8 @@ async function toggleCatalog(el, catalogName) {
 async function toggleSchema(el, catalogName, schemaName) {
   const children = document.getElementById(`schema-${catalogName}-${schemaName}`);
   if (children.style.display === 'none') {
+    // Also trigger a reference-status load so the top bar + panel reflect this schema.
+    loadReferenceStatus(catalogName, schemaName);
     children.style.display = 'block';
     children.innerHTML = '<div class="loading-inline">Loading tables...</div>';
     try {
@@ -623,6 +930,14 @@ async function selectTable(fullName, el) {
   if (el) el.classList.add('active');
   const main = document.getElementById('main-content');
   main.innerHTML = '<div class="generating-banner"><div class="spinner"></div> Loading table details...</div>';
+  // Derive <catalog>.<schema> from the table's full name and ensure
+  // reference status is loaded for that schema.
+  const parts = fullName.split('.');
+  if (parts.length >= 2) {
+    const key = `${parts[0]}.${parts[1]}`;
+    if (key !== currentSchemaKey) loadReferenceStatus(parts[0], parts[1]);
+    else renderReferenceBar();
+  }
   try {
     const data = await apiFetch(`${API}/table/${fullName}`);
     currentTable = data.table;
@@ -638,6 +953,7 @@ function renderTableView() {
   const main = document.getElementById('main-content');
   const hasSuggestions = Object.keys(suggestions).length > 0;
   let html = `
+    <div id="reference-panel-slot">${referencePanelHtml()}</div>
     <div class="table-header">
       <div>
         <h2>${t.name}</h2>
@@ -676,16 +992,35 @@ async function generateDescriptions() {
   btn.disabled = true;
   btn.innerHTML = '<div class="spinner"></div> Generating with Claude...';
   try {
-    const data = await apiFetch(`${API}/generate`, { method: 'POST', body: JSON.stringify({ full_name: currentTable.full_name, rules_override: sessionRules }) });
+    const data = await apiFetch(`${API}/generate`, {
+      method: 'POST',
+      body: JSON.stringify({
+        full_name: currentTable.full_name,
+        rules_override: sessionRules,
+        use_reference: useReference,
+      }),
+    });
     suggestions = {};
     const s = data.suggestions;
-    suggestions['__table__'] = { original: s.table_description, current: s.table_description, status: 'pending', currentComment: currentTable.comment || '' };
+    // Sources list: same for every item from a single generate call
+    // (reference docs are schema-scoped, the LLM can cite any of them).
+    const sources = data.sources || [];
+    suggestions['__table__'] = {
+      original: s.table_description, current: s.table_description, status: 'pending',
+      currentComment: currentTable.comment || '', sources: sources,
+    };
     for (const col of currentTable.columns) {
       const aiDesc = s.column_descriptions[col.name] || '';
-      if (aiDesc) suggestions[col.name] = { original: aiDesc, current: aiDesc, status: 'pending', type: col.type_text, currentComment: col.comment || '' };
+      if (aiDesc) suggestions[col.name] = {
+        original: aiDesc, current: aiDesc, status: 'pending',
+        type: col.type_text, currentComment: col.comment || '', sources: sources,
+      };
     }
     renderTableView();
-    showToast(`Generated descriptions for ${Object.keys(suggestions).length} items`);
+    const refNote = sources.length > 0
+      ? ` (informed by ${sources.length} reference doc${sources.length === 1 ? '' : 's'})`
+      : (useReference ? ' (no reference docs for this schema)' : ' (reference docs disabled)');
+    showToast(`Generated descriptions for ${Object.keys(suggestions).length} items${refNote}`);
   } catch (e) {
     showToast(apiErrorMessage(e, 'generate descriptions for this table'), true);
     btn.disabled = false;
@@ -722,7 +1057,9 @@ function renderSuggestions() {
         <button class="btn btn-sm btn-outline" onclick="resetSuggestion('__table__')">&#8634;</button>
         <button class="btn btn-sm btn-outline" id="regen-btn-__table__" onclick="regenerateSingleBrowse('__table__')" title="Regenerate">&#8635; Regen</button>
         <span class="status-label ${ts.status !== 'pending' ? 'status-' + ts.status : ''}" id="status-__table__">${ts.status !== 'pending' ? ts.status.toUpperCase() : ''}</span>
-      </div></div>`;
+      </div>
+      ${renderSourcesDisclosure(ts.sources)}
+    </div>`;
   }
 
   for (const colName of colKeys) {
@@ -738,7 +1075,9 @@ function renderSuggestions() {
         <button class="btn btn-sm btn-outline" onclick="resetSuggestion('${colName}')">&#8634;</button>
         <button class="btn btn-sm btn-outline" id="regen-btn-${colName}" onclick="regenerateSingleBrowse('${colName}')" title="Regenerate">&#8635; Regen</button>
         <span class="status-label ${s.status !== 'pending' ? 'status-' + s.status : ''}" id="status-${colName}">${s.status !== 'pending' ? s.status.toUpperCase() : ''}</span>
-      </div></div>`;
+      </div>
+      ${renderSourcesDisclosure(s.sources)}
+    </div>`;
   }
 
   html += '</div>';
@@ -754,6 +1093,23 @@ function renderSuggestions() {
     <button class="btn btn-success" onclick="applyApproved()" ${approved === 0 ? 'disabled' : ''} id="apply-btn">&#10003; Apply ${approved} Approved to Metastore</button>
   </div></div>`;
   return html;
+}
+
+// Renders the "Informed by N sources" collapsible under each suggestion.
+// Sources come from the generate response as [{filename, snippet}, ...].
+// Returns '' when the suggestion was produced without reference docs.
+function renderSourcesDisclosure(sources) {
+  if (!sources || sources.length === 0) return '';
+  const items = sources.map(s => `
+    <div class="source-item">
+      <div class="source-filename">&#128196; ${escapeHtml(s.filename)}</div>
+      <div class="source-snippet">${escapeHtml(s.snippet || '')}</div>
+    </div>
+  `).join('');
+  return `<details class="sources-disclosure">
+    <summary class="sources-summary">&#8505; Informed by ${sources.length} source${sources.length === 1 ? '' : 's'}</summary>
+    <div class="sources-list">${items}</div>
+  </details>`;
 }
 
 function setStatus(key, status) {
@@ -842,6 +1198,14 @@ async function loadBatchSchemas() {
   const data = await apiFetch(`${API}/schemas/${cat}`);
   sel.innerHTML = '<option value="">Select schema...</option>';
   data.schemas.forEach(s => { const opt = document.createElement('option'); opt.value = s.name; opt.text = s.name; sel.appendChild(opt); });
+  // Reset reference status when catalog changes — user picks a new schema below.
+  currentSchemaKey = null;
+  renderReferenceBar();
+  sel.onchange = () => {
+    const schema = sel.value;
+    if (cat && schema) loadReferenceStatus(cat, schema);
+    else { currentSchemaKey = null; renderReferenceBar(); }
+  };
 }
 
 async function loadNbSchemas() {
@@ -871,7 +1235,10 @@ async function runBatchGenerate() {
   try {
     const data = await apiFetch(`${API}/generate/batch`, {
       method: 'POST',
-      body: JSON.stringify({ catalog_name: cat, schema_name: schema, rules_override: sessionRules }),
+      body: JSON.stringify({
+        catalog_name: cat, schema_name: schema,
+        rules_override: sessionRules, use_reference: useReference,
+      }),
     });
 
     document.getElementById('batch-progress').style.display = 'none';
@@ -1078,11 +1445,17 @@ async function regenerateSingleBrowse(key) {
     const itemName = key === '__table__' ? null : key;
     const data = await apiFetch(`${API}/generate/item`, {
       method: 'POST',
-      body: JSON.stringify({ full_name: currentTable.full_name, item_name: itemName, rules_override: sessionRules }),
+      body: JSON.stringify({
+        full_name: currentTable.full_name,
+        item_name: itemName,
+        rules_override: sessionRules,
+        use_reference: useReference,
+      }),
     });
     suggestions[key].original = data.description;
     suggestions[key].current = data.description;
     suggestions[key].status = 'pending';
+    suggestions[key].sources = data.sources || [];
     renderTableView();
   } catch (e) {
     showToast(apiErrorMessage(e, 'regenerate this description'), true);
@@ -1096,7 +1469,10 @@ async function regenerateBatchCol(fullName, colName, idx, colIdx, btn) {
   try {
     const data = await apiFetch(`${API}/generate/item`, {
       method: 'POST',
-      body: JSON.stringify({ full_name: fullName, item_name: colName, rules_override: sessionRules }),
+      body: JSON.stringify({
+        full_name: fullName, item_name: colName,
+        rules_override: sessionRules, use_reference: useReference,
+      }),
     });
     const newDesc = data.description;
     batchResults[idx].suggestions.column_descriptions[colName] = newDesc;
@@ -1122,7 +1498,10 @@ async function regenerateBatchTable(fullName, idx, btn) {
   try {
     const data = await apiFetch(`${API}/generate/item`, {
       method: 'POST',
-      body: JSON.stringify({ full_name: fullName, item_name: null, rules_override: sessionRules }),
+      body: JSON.stringify({
+        full_name: fullName, item_name: null,
+        rules_override: sessionRules, use_reference: useReference,
+      }),
     });
     batchResults[idx].suggestions.table_description = data.description;
     const el = document.getElementById(`batch-table-desc-${idx}`);
@@ -1243,6 +1622,7 @@ loadCatalogs();
 renderSessionRulesPanel('browse');
 renderSessionRulesPanel('batch');
 renderSessionRulesPanel('rules');
+renderReferenceBar();
 </script>
 </body>
 </html>
